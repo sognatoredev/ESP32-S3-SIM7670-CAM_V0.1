@@ -25,12 +25,17 @@
 #include "esp32-hal-log.h"
 #endif
 
+// 스트리밍 상태 플래그 — LED_GPIO_NUM 유무와 무관하게 전역 선언
+bool isStreaming = false;
+
+// SD 캡처 요청 플래그 — .ino 에서 선언, 스트리밍 루프 일시정지에 사용
+extern volatile bool capturePending;
+
 // LED FLASH setup
 #if defined(LED_GPIO_NUM)
 #define CONFIG_LED_MAX_INTENSITY 255
 
 int led_duty = 0;
-bool isStreaming = false;
 
 #endif
 
@@ -226,12 +231,17 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "X-Framerate", "60");
 
-#if defined(LED_GPIO_NUM)
   isStreaming = true;
+#if defined(LED_GPIO_NUM)
   enable_led(true);
 #endif
 
   while (true) {
+    // SD 캡처 요청 시 프레임 버퍼 반납 후 대기 — 버퍼 경쟁 방지
+    while (capturePending) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     fb = esp_camera_fb_get();
     if (!fb) {
       log_e("Camera capture failed");
@@ -289,8 +299,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     );
   }
 
-#if defined(LED_GPIO_NUM)
   isStreaming = false;
+#if defined(LED_GPIO_NUM)
   enable_led(false);
 #endif
 
