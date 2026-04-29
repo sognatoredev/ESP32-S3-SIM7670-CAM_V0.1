@@ -20,6 +20,7 @@
 #include "sdkconfig.h"
 #include "camera_index.h"
 #include "board_config.h"
+#include "camera_mgr.h"
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -27,9 +28,6 @@
 
 // 스트리밍 상태 플래그 — LED_GPIO_NUM 유무와 무관하게 전역 선언
 bool isStreaming = false;
-
-// SD 캡처 요청 플래그 — .ino 에서 선언, 스트리밍 루프 일시정지에 사용
-extern volatile bool capturePending;
 
 // LED FLASH setup
 #if defined(LED_GPIO_NUM)

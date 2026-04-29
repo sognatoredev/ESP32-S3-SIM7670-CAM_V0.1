@@ -1,0 +1,63 @@
+#pragma once
+
+// ===========================
+// WiFi
+// ===========================
+#define WIFI_SSID        "KT_GiGA_9748"
+#define WIFI_PASSWORD    "9cf0bkd529"
+
+// ===========================
+// NTP  (KST = UTC+9)
+// ===========================
+#define NTP_SERVER       "pool.ntp.org"
+#define NTP_GMT_OFFSET   (9L * 3600L)
+#define NTP_DST_OFFSET   0
+
+// ===========================
+// SIM7670G UART & Power
+// ===========================
+#define SIM_RX_PIN      17
+#define SIM_TX_PIN      18
+#define SIM_PWRKEY_PIN  21    // PWRKEY: LOW pulse to power on/off
+#define SIM_BAUD_INIT   115200
+#define SIM_BAUD_WORK   921600
+
+// PWRKEY pulse durations (ms)
+#define SIM_PWRON_PULSE_MS   1200   // > 1 s to power on
+#define SIM_PWROFF_PULSE_MS  2500   // > 2 s to power off
+#define SIM_BOOT_WAIT_MS     8000   // wait after power-on before sending AT
+
+// ===========================
+// Server
+// ===========================
+#define SERVER_HOST         "dev.neverlosewater.com"
+#define SERVER_PORT         49152
+#define DEVICE_MODEL_PREFIX "SM2-V3A"
+#define DEVICE_UNIT_CODE    "6002"
+#define DEVICE_SERIAL_NO    DEVICE_MODEL_PREFIX "-" DEVICE_UNIT_CODE
+#define DEVICE_SW_VER       "0108"
+#define HTTP_BOUNDARY       "1818FFFF"
+
+// ===========================
+// SD card pins & folder structure
+//   /RTU/Image/YYYY/MM/DD/YYYYMMDD_HHMMSS.jpg  <- saved right after capture
+//   /Data/Image/YYYY/MM/DD/YYYYMMDD_HHMMSS.jpg <- moved after successful TX
+// ===========================
+#define SD_CLK_PIN   5
+#define SD_CMD_PIN   4
+#define SD_D0_PIN    6
+#define SD_RTU_ROOT  "/RTU/Image"
+#define SD_DATA_ROOT "/Data/Image"
+
+// ===========================
+// WS2812B LED
+// ===========================
+#define WS2812_PIN 38
+#define WS2812_NUM  1
+
+// ===========================
+// Device sensor placeholders
+// TODO: replace with actual ADC / sensor reads
+// ===========================
+#define DEVICE_BATTERY_LEVEL 100
+#define DEVICE_TEMPERATURE   25
