@@ -71,8 +71,7 @@ void setup()
   // ── NTP sync ──
   timeSyncInit();
 
-  startCameraServer();
-  Serial.printf("[SYS] Ready  http://%s\n", WiFi.localIP().toString().c_str());
+  Serial.println("[SYS] Ready (WiFi stream/capture disabled)");
   ledSet(0, 40, 0);   // green: standby
 }
 

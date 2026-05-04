@@ -20,14 +20,18 @@ String  simGetModemTime();
 int     simGetSinr();
 SimInfo simGetInfo();
 
-// ── HTTP ──────────────────────────────────────────────────────────────────────
-// Read <bodyLen> bytes from the modem HTTP buffer.
-// Sends AT+HTTPREAD=0,<bodyLen>, waits for OK, then collects data until
-// the +HTTPREAD: 0 end-marker.  Returns the body string (trimmed).
+// ── HTTP (used during boot: device_status POST, device_setting GET) ───────────
 String simHttpReadBody(int bodyLen);
-
 String simHttpGet(const String &url);
 bool   simHttpPostEmpty(const String &url);
+
+// ── TCP / CIPSEND (used for image upload) ────────────────────────────────────
+bool   simNetOpen();
+void   simNetClose();
+bool   simTcpOpen(int link, const char *host, int port);
+void   simTcpClose(int link);
+bool   simTcpSendChunk(int link, const uint8_t *data, size_t len);
+String simTcpReadResponse(int link, uint32_t timeoutMs);
 
 // ── Server communication ──────────────────────────────────────────────────────
 bool simPostDeviceStatus(const SimInfo &info);

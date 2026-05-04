@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python --version 2>$null)",
+      "PowerShell(py --version 2>$null)",
+      "PowerShell($pdfPath = \"C:\\\\00.Work\\\\01.Project\\\\022.���ڿ�����_�̹���ĸó\\\\02.DataSheet\\\\SIM7670\\\\SIM7672X_SIM7652X_Series_HTTP\\(S\\)_Application_Note_V1.00.pdf\")"
+    ]
+  }
+}

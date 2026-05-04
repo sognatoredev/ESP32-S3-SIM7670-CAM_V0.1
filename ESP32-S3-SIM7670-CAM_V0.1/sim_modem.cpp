@@ -50,12 +50,18 @@ void simPowerOff()
 
 String simSendAT(const String &cmd, uint32_t timeout)
 {
+  Serial.print("\r\n>> "); Serial.println(cmd);
   SimSerial.println(cmd);
   String   resp = "";
   uint32_t t    = millis();
   while (millis() - t < timeout)
   {
-    while (SimSerial.available()) resp += (char)SimSerial.read();
+    while (SimSerial.available())
+    {
+      char c = (char)SimSerial.read();
+      resp  += c;
+      Serial.write(c);
+    }
     if (resp.indexOf("OK")    != -1 ||
         resp.indexOf("ERROR") != -1) break;
   }
@@ -68,7 +74,12 @@ String simWaitFor(const String &token, uint32_t timeout)
   uint32_t t    = millis();
   while (millis() - t < timeout)
   {
-    while (SimSerial.available()) resp += (char)SimSerial.read();
+    while (SimSerial.available())
+    {
+      char c = (char)SimSerial.read();
+      resp  += c;
+      Serial.write(c);
+    }
     if (resp.indexOf(token) != -1) break;
   }
   return resp;
@@ -77,7 +88,10 @@ String simWaitFor(const String &token, uint32_t timeout)
 void simFlush(uint32_t delayMs)
 {
   delay(delayMs);
-  while (SimSerial.available()) SimSerial.read();
+  while (SimSerial.available())
+  {
+    Serial.write((char)SimSerial.read());
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -484,15 +498,164 @@ void simConnect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SIM7670G init
-//   115200 basic check -> upgrade to 921600 -> network log -> server connect
+// TCP helpers  (NETOPEN / CIPOPEN / CIPSEND)
+// Used for image upload; avoids AT+HTTPDATA's 0x1A-termination bug.
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool simNetOpen()
+{
+  String resp = simSendAT("AT+NETOPEN", 12000);
+  if (resp.indexOf("already opened") != -1)
+  {
+    Serial.println("[TCP] Network already open");
+    return true;
+  }
+  if (resp.indexOf("+NETOPEN: 0") != -1) return true;
+  // Some firmware versions send OK first, then the +NETOPEN URC separately
+  if (resp.indexOf("OK") != -1)
+  {
+    String urc = simWaitFor("+NETOPEN:", 8000);
+    if (urc.indexOf("+NETOPEN: 0") != -1) return true;
+  }
+  Serial.println("[TCP] NETOPEN failed: " + resp);
+  return false;
+}
+
+void simNetClose()
+{
+  simSendAT("AT+NETCLOSE", 10000);
+  simFlush(200);
+}
+
+bool simTcpOpen(int link, const char *host, int port)
+{
+  simSendAT("AT+CIPRXGET=1", 2000);   // buffer mode: data held until AT+CIPRXGET=2
+
+  String cmd = String("AT+CIPOPEN=") + link
+             + ",\"TCP\",\"" + host + "\"," + port;
+  Serial.print("\r\n>> "); Serial.println(cmd);
+  SimSerial.println(cmd);
+
+  String resp  = simWaitFor("+CIPOPEN:", 30000);
+  String token = "+CIPOPEN: " + String(link) + ",0";
+  if (resp.indexOf(token) == -1)
+  {
+    Serial.println("[TCP] CIPOPEN failed: " + resp);
+    return false;
+  }
+  Serial.println("[TCP] TCP connected");
+  return true;
+}
+
+void simTcpClose(int link)
+{
+  simSendAT("AT+CIPCLOSE=" + String(link), 5000);
+}
+
+// Send exactly <len> bytes (max 1500) through an open TCP socket.
+bool simTcpSendChunk(int link, const uint8_t *data, size_t len)
+{
+  if (len == 0) return true;
+
+  String cmd = "AT+CIPSEND=" + String(link) + "," + String(len);
+  Serial.print("\r\n>> "); Serial.println(cmd);
+  SimSerial.println(cmd);
+
+  if (simWaitFor(">", 5000).indexOf(">") == -1)
+  {
+    Serial.println("[TCP] CIPSEND: no '>' prompt");
+    return false;
+  }
+
+  SimSerial.write(data, len);
+  SimSerial.flush();
+
+  String resp = simWaitFor("+CIPSEND:", 10000);
+  int ci = resp.indexOf("+CIPSEND:");
+  if (ci == -1) { Serial.println("[TCP] CIPSEND: no response"); return false; }
+
+  // +CIPSEND: <link>,<reqLen>,<cnfLen>
+  int c1 = resp.indexOf(',', ci);
+  int c2 = resp.indexOf(',', c1 + 1);
+  int c3 = resp.indexOf('\n', c2 + 1);
+  if (c1 == -1 || c2 == -1) return false;
+
+  int req = resp.substring(c1 + 1, c2).toInt();
+  int cnf = resp.substring(c2 + 1, c3 == -1 ? (int)resp.length() : c3).toInt();
+  Serial.printf("[TCP] CIPSEND req=%d cnf=%d\n", req, cnf);
+  // cnf < 0 → connection dropped; cnf == 0 → TCP send buffer full
+  return (cnf > 0 && cnf == req);
+}
+
+// Read buffered HTTP response after all request data has been sent.
+// Returns the raw HTTP response text (status line + headers + body).
+String simTcpReadResponse(int link, uint32_t timeoutMs)
+{
+  Serial.println("[TCP] Waiting for HTTP response...");
+  if (simWaitFor("+CIPRXGET: 1,", timeoutMs).indexOf("+CIPRXGET: 1,") == -1)
+  {
+    Serial.println("[TCP] Response timeout");
+    return "";
+  }
+
+  String fullResp = "";
+  int    zeroReads = 0;    // consecutive "pending = 0" reads → idle guard
+
+  for (int iter = 0; iter < 40 && zeroReads < 6; iter++)
+  {
+    // ── Query pending byte count ──────────────────────────────────────────
+    String qCmd = "AT+CIPRXGET=4," + String(link);
+    SimSerial.println(qCmd);
+    Serial.print("\r\n>> "); Serial.println(qCmd);
+    String qr = simWaitFor("OK", 2000);
+
+    int qi = qr.indexOf("+CIPRXGET: 4,");
+    if (qi == -1) { zeroReads++; delay(200); continue; }
+
+    // +CIPRXGET: 4,<link>,<pending>
+    int c1 = qr.indexOf(',', qi + 13);   // comma after link number
+    if (c1 == -1) { zeroReads++; delay(200); continue; }
+    int lineEnd = qr.indexOf('\n', c1 + 1);
+    int pending = qr.substring(c1 + 1,
+                               lineEnd == -1 ? (int)qr.length() : lineEnd).toInt();
+
+    if (pending == 0) { zeroReads++; delay(200); continue; }
+    zeroReads = 0;
+
+    // ── Read up to 1500 bytes ─────────────────────────────────────────────
+    int    toRead = min(pending, 1500);
+    String rCmd   = "AT+CIPRXGET=2," + String(link) + "," + String(toRead);
+    SimSerial.println(rCmd);
+    Serial.print("\r\n>> "); Serial.println(rCmd);
+    String dr = simWaitFor("OK", 5000);
+
+    int di = dr.indexOf("+CIPRXGET: 2,");
+    if (di == -1) continue;
+    int nl = dr.indexOf('\n', di);
+    if (nl == -1) continue;
+
+    // +CIPRXGET: 2,<link>,<datalen>,<remaining>
+    String hdr = dr.substring(di, nl);
+    int hc1 = hdr.indexOf(',', 13);              // comma after link
+    int hc2 = hdr.indexOf(',', hc1 + 1);         // comma after datalen
+    int dataLen = hdr.substring(hc1 + 1,
+                                hc2 == -1 ? (int)hdr.length() : hc2).toInt();
+    if (dataLen > 0)
+      fullResp += dr.substring(nl + 1, nl + 1 + dataLen);
+  }
+
+  Serial.printf("[TCP] Response: %u bytes\n", (unsigned)fullResp.length());
+  return fullResp;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIM7670G init  (115200 fixed)
 // ─────────────────────────────────────────────────────────────────────────────
 bool simInit()
 {
   Serial.println("[SIM] Initializing...");
 
   SimSerial.begin(SIM_BAUD_INIT, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
-  // Boot delay is handled by simPowerOn(); no extra delay needed here
 
   // Retry AT up to 10 times to tolerate cold-boot modem startup delay
   bool gotOk = false;
@@ -512,24 +675,9 @@ bool simInit()
   }
   Serial.println("[SIM] 115200 bps OK");
 
-  // Upgrade UART speed
-  simSendAT("AT+IPR=921600", 1000);
-  SimSerial.end();
-  delay(100);
-  SimSerial.begin(SIM_BAUD_WORK, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
-  delay(500);
-
-  if (simSendAT("AT", 2000).indexOf("OK") == -1)
-  {
-    Serial.println("[SIM] 921600 upgrade failed, fallback to 115200");
-    SimSerial.end();
-    SimSerial.begin(SIM_BAUD_INIT, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
-    delay(300);
-  }
-  else
-  {
-    Serial.println("[SIM] 921600 bps OK");
-  }
+  // Disable echo: CIPSEND binary chunks are echoed back with ATE1, which injects
+  // null bytes into String responses and breaks indexOf("+CIPSEND:").
+  simSendAT("ATE0", 1000);
 
   // Network status
   Serial.println("[SIM] CGREG: " + simSendAT("AT+CGREG?", 3000));
@@ -542,3 +690,5 @@ bool simInit()
   Serial.println("[SIM] Init complete");
   return true;
 }
+
+

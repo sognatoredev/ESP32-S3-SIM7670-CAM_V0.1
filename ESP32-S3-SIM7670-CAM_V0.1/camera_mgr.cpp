@@ -95,7 +95,11 @@ bool cameraInit()
 #endif
 
   camera_sensor2 = esp_camera_sensor_get();
+  
   SetCameraFramesize(11);   // HD 1280x720 (streaming default)
+
+  SetCameraMirror(0x06); // 2026.05.04 feat.CSH : 이미지 좌우 반전
+
   return true;
 }
 
@@ -120,4 +124,12 @@ void SetCameraQuality(int quality)
   }
   current_cam_quality = quality;
   camera_sensor2->set_quality(camera_sensor2, current_cam_quality);
+}
+
+void SetCameraMirror(int enable)
+{
+  Serial.println("[CAM] Set Mirror Enable.");
+
+  camera_sensor2->set_hmirror(camera_sensor2, enable);
+  Serial.printf("[CAM] Mirror Enable/Disable -> %d\n", enable);
 }

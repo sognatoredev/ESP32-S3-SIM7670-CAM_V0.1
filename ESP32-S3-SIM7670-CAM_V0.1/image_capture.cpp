@@ -36,28 +36,28 @@ void captureAndSave()
     return;
   }
 
-  // Pause streaming
   capturePending = true;
-  if (isStreaming)
-  {
-    delay(300);   // let current frame finish
-    Serial.println("[CAP] Streaming paused");
-  }
 
-  // Switch to FHD + fixed quality for the still capture.
-  // AT+HTTPDATA hard limit is 319488 bytes; JPEG quality 12 keeps FHD under ~200 KB
-  // in typical outdoor scenes.  Lower number = higher quality / larger file.
+  // Switch to FHD for the still capture.
+  // OV5640 natively supports FHD (1920x1080).
+  // AT+HTTPDATA hard limit is 319488 bytes; JPEG quality 12 keeps FHD under ~200 KB.
   framesize_t prevFramesize = current_cam_framesize;
   sensor_t   *s             = esp_camera_sensor_get();
   int         prevQuality   = s->status.quality;
-  s->set_framesize(s, FRAMESIZE_FHD);
+  // s->set_framesize(s, FRAMESIZE_FHD); // default.
+  // s->set_framesize(s, FRAMESIZE_HD); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_HD 1280x720
+  // s->set_framesize(s, FRAMESIZE_XGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_XGA 1024x768    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
+  s->set_framesize(s, FRAMESIZE_SVGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_SVGA 800x600    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
   s->set_quality(s, 12);
   delay(300);
 
-  // Discard stale frame from previous resolution
+  // Discard 3 stale frames after resolution change.
+  // OV5640 needs 2-3 frames to stabilise after a timing/resolution switch.
+  for (int i = 0; i < 3; i++)
   {
     camera_fb_t *fl = esp_camera_fb_get();
     if (fl) esp_camera_fb_return(fl);
+    delay(50);
   }
 
   // Flash on -> capture -> flash off
@@ -80,6 +80,40 @@ void captureAndSave()
   }
 
   size_t imgLen = fb->len;
+
+  // Validate JPEG: must start with FF D8 and contain a SOF0/SOF2 marker.
+  // A missing SOF means the camera output is corrupt (unsupported resolution,
+  // DMA underrun, etc.) — discard and abort rather than save a broken file.
+  {
+    bool jpegStart = (imgLen >= 2 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8);
+    bool sofFound  = false;
+    if (jpegStart)
+    {
+      for (size_t i = 0; i + 8 < imgLen; i++)
+      {
+        if (fb->buf[i] == 0xFF &&
+            (fb->buf[i+1] == 0xC0 || fb->buf[i+1] == 0xC2))
+        {
+          uint16_t sofH = ((uint16_t)fb->buf[i+5] << 8) | fb->buf[i+6];
+          uint16_t sofW = ((uint16_t)fb->buf[i+7] << 8) | fb->buf[i+8];
+          Serial.printf("[CAP] JPEG SOF: %u x %u  (fb: %u x %u)  size=%u bytes\n",
+                        sofW, sofH, fb->width, fb->height, (unsigned)imgLen);
+          sofFound = true;
+          break;
+        }
+      }
+    }
+    if (!jpegStart || !sofFound)
+    {
+      Serial.printf("[CAP] Invalid JPEG (start=%d sofFound=%d size=%u) — discarding\n",
+                    jpegStart, sofFound, (unsigned)imgLen);
+      esp_camera_fb_return(fb);
+      ledBlink(255, 80, 0, 3, 400);
+      ledSet(0, 40, 0);
+      return;
+    }
+  }
+
   char   dirPath[56], filePath[80];
 
   if (hasTime)

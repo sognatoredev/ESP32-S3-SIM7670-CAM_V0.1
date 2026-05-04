@@ -8,20 +8,10 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Image upload  POST /m2/point_image  (multipart/form-data)
+// Method: AT+CIPSEND (raw TCP) — binary-safe, no 0x1A issue, no EFS size limit.
+// Data is streamed from SD directly to TCP in 1460-byte chunks.
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Multipart body structure:
-//   --1818FFFF\r\n
-//   Content-Disposition: form-data; name="file_name"\r\n
-//   \r\n
-//   20260317_152007.jpg
-//   \r\n--1818FFFF\r\n
-//   Content-Disposition: form-data; name="img_file"; filename="20260317_152007.jpg"\r\n
-//   Content-Type: image/jpeg\r\n
-//   \r\n
-//   [binary JPEG data]
-//   \r\n--1818FFFF--\r\n
-//
+
 bool sendFileViaSim(const String &filePath)
 {
   File f = SD_MMC.open(filePath, FILE_READ);
@@ -40,133 +30,130 @@ bool sendFileViaSim(const String &filePath)
 
   String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
 
-  String p1Hdr = String("--") + HTTP_BOUNDARY + "\r\n"
-               + "Content-Disposition: form-data; name=\"file_name\"\r\n"
-               + "\r\n";
+  // ── Build the three header sections ──────────────────────────────────────
+  //
+  // Hdr2: --boundary + Content-Disposition(file_name) + blank + filename value
+  // Hdr3: --boundary + Content-Disposition(img_file)  + Content-Type  + blank
+  //        (JPEG binary follows immediately after hdr3)
+  // closing: \r\n--boundary--\r\n  (delimiter \r\n + closing boundary)
+  //
+  // Build hdr2/hdr3/closing first so their sizes are known for Content-Length.
 
-  String p2Hdr = "\r\n--" + String(HTTP_BOUNDARY) + "\r\n"
-               + "Content-Disposition: form-data; name=\"img_file\"; filename=\"" + fileName + "\"\r\n"
-               + "Content-Type: image/jpeg\r\n"
-               + "\r\n";
+  String hdr2 = String("--") + HTTP_BOUNDARY + "\r\n"
+              + "Content-Disposition: form-data; name=\"file_name\"\r\n"
+              + "\r\n"
+              + fileName + "\r\n";
+
+  String hdr3 = String("--") + HTTP_BOUNDARY + "\r\n"
+              + "Content-Disposition: form-data; name=\"img_file\"; filename=\""
+              + fileName + "\"\r\n"
+              + "Content-Type: image/jpeg\r\n"
+              + "\r\n";
 
   String closing = "\r\n--" + String(HTTP_BOUNDARY) + "--\r\n";
 
-  size_t totalSize = p1Hdr.length()
-                   + fileName.length()
-                   + p2Hdr.length()
-                   + fileSize
-                   + closing.length();
+  // Content-Length = multipart body size (hdr2 + hdr3 + JPEG + closing)
+  size_t bodySize = hdr2.length() + hdr3.length() + fileSize + closing.length();
 
-  // SIM7670G AT+HTTPDATA hard limit: 319488 bytes (per AT command manual)
-  // AT+HTTPDATA= with a larger value returns ERROR immediately.
-  if (totalSize > 319488)
+  // Hdr1: HTTP request line + HTTP headers (order matches reference firmware log)
+  String hdr1 = String("POST /m2/point_image?serial_no=") + DEVICE_SERIAL_NO
+              + " HTTP/1.1\r\n"
+              + "Host: " + SERVER_HOST + ":" + SERVER_PORT + "\r\n"
+              + "Connection: close\r\n"
+              + "Content-Type: multipart/form-data; boundary=" + HTTP_BOUNDARY + "\r\n"
+              + "Content-Length: " + String(bodySize) + "\r\n"
+              + "\r\n";
+
+  // hdr1 + hdr2 + hdr3 combined — sent as a single CIPSEND (~388 bytes)
+  String allHdrs = hdr1 + hdr2 + hdr3;
+
+  Serial.printf("[TX] %s  file=%u  body=%u  allHdrs=%u\n",
+                fileName.c_str(), (unsigned)fileSize,
+                (unsigned)bodySize, (unsigned)allHdrs.length());
+  Serial.println("[TX] Headers:\n" + allHdrs);
+
+  // ── Step 1: Open TCP connection ───────────────────────────────────────────
+  if (!simNetOpen())
   {
-    Serial.printf("[TX] ABORT: payload %u bytes exceeds modem AT+HTTPDATA limit (319488). "
-                  "Reduce JPEG quality or resolution.\n", (unsigned)totalSize);
     f.close();
     return false;
   }
-
-  Serial.printf("[TX] %s  file=%u  total=%u bytes\n",
-                fileName.c_str(), (unsigned)fileSize, (unsigned)totalSize);
-
-  String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
-             + "/m2/point_image?serial_no=" + DEVICE_SERIAL_NO;
-  Serial.println("[TX] POST " + url);
-
-  simSendAT("AT+HTTPTERM", 1000);
-  simFlush(100);
-
-  if (simSendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1)
+  if (!simTcpOpen(0, SERVER_HOST, SERVER_PORT))
   {
-    Serial.println("[TX] HTTPINIT failed");
     f.close();
+    simNetClose();
     return false;
   }
-  simSendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000);
-  simSendAT("AT+HTTPPARA=\"CONTENT\",\"multipart/form-data; boundary=" + String(HTTP_BOUNDARY) + "\"", 3000);
 
-  // 60 s DOWNLOAD window — at 115200 baud fallback a 400 KB payload needs ~35 s
-  String dataCmd = "AT+HTTPDATA=" + String(totalSize) + ",60000";
-  SimSerial.println(dataCmd);
-  String dlResp = simWaitFor("DOWNLOAD", 5000);
-  if (dlResp.indexOf("DOWNLOAD") == -1)
+  // ── Step 2: Send all headers in one CIPSEND ───────────────────────────────
+  if (!simTcpSendChunk(0, (const uint8_t *)allHdrs.c_str(), allHdrs.length()))
   {
-    Serial.println("[TX] DOWNLOAD prompt not received");
-    f.close();
-    simSendAT("AT+HTTPTERM", 2000);
+    Serial.println("[TX] headers send failed");
+    f.close(); simTcpClose(0); simNetClose();
     return false;
   }
-  Serial.println("[TX] DOWNLOAD ready, sending data...");
 
-  // Brief pause so the modem fully enters data-receive mode before the first byte
-  delay(100);
+  // ── Step 3: Stream JPEG binary in 1460-byte chunks ───────────────────────
+  const size_t CHUNK = 1460;
+  uint8_t  buf[CHUNK];
+  size_t   bytesSent = 0;
+  size_t   lastReport = 0;
+  bool     sendOk = true;
 
-  SimSerial.print(p1Hdr);
-  SimSerial.print(fileName);
-  SimSerial.print(p2Hdr);
-
-  // Stream JPEG in 256-byte chunks with a 5 ms inter-chunk delay.
-  // At 921600 baud 256 bytes = ~2.8 ms + 5 ms gap → ~33 KB/s effective rate.
-  // This prevents the SIM7670G HTTPDATA input buffer from overflowing, which
-  // causes the modem to abort with ERROR before receiving all bytes.
-  uint8_t buf[256];
-  size_t  bytesSent = 0;
-  while (f.available())
+  while (f.available() && sendOk)
   {
     size_t rd = f.read(buf, sizeof(buf));
-    SimSerial.write(buf, rd);
-    delay(5);
+    sendOk = simTcpSendChunk(0, buf, rd);
     bytesSent += rd;
+
+    if (bytesSent - lastReport >= 4096 || !f.available())
+    {
+      Serial.printf("[TX] JPEG %u / %u bytes\n",
+                    (unsigned)bytesSent, (unsigned)fileSize);
+      lastReport = bytesSent;
+    }
   }
   f.close();
-  Serial.printf("[TX] %u bytes streamed\n", (unsigned)bytesSent);
 
-  SimSerial.print(closing);
-  SimSerial.flush();
-
-  // Log whatever the modem sends back so failures are diagnosable
-  String dataResp = simWaitFor("OK", 30000);
-  Serial.println("[TX] HTTPDATA resp: " + dataResp);
-  if (dataResp.indexOf("OK") == -1)
+  if (!sendOk)
   {
-    Serial.println("[TX] HTTPDATA OK not received");
-    simSendAT("AT+HTTPTERM", 3000);
+    Serial.println("[TX] JPEG stream failed");
+    simTcpClose(0); simNetClose();
+    return false;
+  }
+  Serial.printf("[TX] JPEG sent: %u bytes\n", (unsigned)bytesSent);
+
+  // ── Step 6: Send closing boundary ────────────────────────────────────────
+  if (!simTcpSendChunk(0, (const uint8_t *)closing.c_str(), closing.length()))
+  {
+    Serial.println("[TX] closing send failed");
+    simTcpClose(0); simNetClose();
     return false;
   }
 
-  SimSerial.println("AT+HTTPACTION=1");
-  // Do NOT use a separate simWaitFor("OK") here.
-  // The modem sends "OK" (command ACK) immediately, then "+HTTPACTION:" asynchronously.
-  // If the server responds within 3 s both arrive together and a two-step read
-  // discards "+HTTPACTION:" inside the first call.  One 60 s wait captures both.
-  String actionResp = simWaitFor("+HTTPACTION:", 60000);
-  Serial.println("[TX] HTTPACTION: " + actionResp);
+  // ── Step 7: Read HTTP response ────────────────────────────────────────────
+  String httpResp = simTcpReadResponse(0, 30000);
+  simTcpClose(0);
+  simNetClose();
 
-  int ai = actionResp.indexOf("+HTTPACTION:");
-  if (ai == -1) { simSendAT("AT+HTTPTERM", 2000); return false; }
-
-  int c1 = actionResp.indexOf(',', ai);
-  int c2 = actionResp.indexOf(',', c1 + 1);
-  int c3 = actionResp.indexOf('\n', c2 + 1);
-  if (c1 == -1 || c2 == -1) { simSendAT("AT+HTTPTERM", 2000); return false; }
-
-  int code    = actionResp.substring(c1 + 1, c2).toInt();
-  int bodyLen = actionResp.substring(c2 + 1, c3 == -1 ? (int)actionResp.length() : c3).toInt();
-  Serial.printf("[TX] HTTP response code: %d  body_len: %d\n", code, bodyLen);
-
-  // Print response headers
-  String headResp = simSendAT("AT+HTTPHEAD", 5000);
-  Serial.println("[TX] Headers:\n" + headResp);
-
-  // Print response body
-  if (bodyLen > 0)
+  if (httpResp.isEmpty())
   {
-    String body = simHttpReadBody(bodyLen);
-    Serial.println("[TX] Body: " + body);
+    Serial.println("[TX] No HTTP response received");
+    return false;
   }
 
-  simSendAT("AT+HTTPTERM", 2000);
+  // Parse status code from "HTTP/1.x NNN ..."
+  int code = -1;
+  int si   = httpResp.indexOf("HTTP/1.");
+  if (si != -1)
+  {
+    int sp = httpResp.indexOf(' ', si);
+    if (sp != -1) code = httpResp.substring(sp + 1, sp + 4).toInt();
+  }
+  Serial.printf("[TX] HTTP %d\n", code);
+  Serial.println("[TX] Response:\n" +
+                 httpResp.substring(0, min((int)httpResp.length(), 400)));
+
   return (code >= 200 && code < 300);
 }
 

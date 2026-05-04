@@ -9,3 +9,4 @@ extern volatile bool capturePending;
 bool cameraInit();
 void SetCameraFramesize(int size);
 void SetCameraQuality(int quality);
+void SetCameraMirror(int enable);

@@ -20,7 +20,6 @@
 #define SIM_TX_PIN      18
 #define SIM_PWRKEY_PIN  21    // PWRKEY: LOW pulse to power on/off
 #define SIM_BAUD_INIT   115200
-#define SIM_BAUD_WORK   921600
 
 // PWRKEY pulse durations (ms)
 #define SIM_PWRON_PULSE_MS   1200   // > 1 s to power on
@@ -36,7 +35,11 @@
 #define DEVICE_UNIT_CODE    "6002"
 #define DEVICE_SERIAL_NO    DEVICE_MODEL_PREFIX "-" DEVICE_UNIT_CODE
 #define DEVICE_SW_VER       "0108"
-#define HTTP_BOUNDARY       "1818FFFF"
+// Boundary must be long enough that it cannot appear by chance in JPEG binary data.
+// 8-char boundary ("1818FFFF") is too short — a 79 KB JPEG can contain \r\n--1818FFFF
+// as an accidental byte sequence, causing the server multipart parser to truncate the
+// image halfway.  A 28-char boundary makes accidental collision practically impossible.
+#define HTTP_BOUNDARY       "ImageBoundary1818FFFF00000000"
 
 // ===========================
 // SD card pins & folder structure
