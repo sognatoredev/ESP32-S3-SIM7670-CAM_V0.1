@@ -58,7 +58,7 @@ bool sendFileViaSim(const String &filePath)
   // Hdr1: HTTP request line + HTTP headers (order matches reference firmware log)
   String hdr1 = String("POST /m2/point_image?serial_no=") + DEVICE_SERIAL_NO
               + " HTTP/1.1\r\n"
-              + "Host: " + SERVER_HOST + ":" + SERVER_PORT + "\r\n"
+              + "Host: " + SERVER_HOST + "\r\n"
               + "Connection: close\r\n"
               + "Content-Type: multipart/form-data; boundary=" + HTTP_BOUNDARY + "\r\n"
               + "Content-Length: " + String(bodySize) + "\r\n"
@@ -93,8 +93,9 @@ bool sendFileViaSim(const String &filePath)
     return false;
   }
 
-  // ── Step 3: Stream JPEG binary in 1460-byte chunks ───────────────────────
-  const size_t CHUNK = 1460;
+  // ── Step 3: Stream JPEG binary in 1400-byte chunks ───────────────────────
+  // const size_t CHUNK = 1400;
+  const size_t CHUNK = 1500; // 2026.05.06 csh : 최대 길이인 1500 으로 변경해서 테스트
   uint8_t  buf[CHUNK];
   size_t   bytesSent = 0;
   size_t   lastReport = 0;
@@ -103,6 +104,9 @@ bool sendFileViaSim(const String &filePath)
   while (f.available() && sendOk)
   {
     size_t rd = f.read(buf, sizeof(buf));
+    // delay(50);
+    // delay(5); // 2026.05.06 csh : CIPSEND 간 딜레이 50으로 했을때 성공 확인 후 5로 변경 테스트 결과 : ERROR 발생되는 경우 확인함
+    delay(10); // 2026.05.06 csh : CIPSEND 간 딜레이 50으로 했을때 성공 확인 후 5로 변경 테스트
     sendOk = simTcpSendChunk(0, buf, rd);
     bytesSent += rd;
 
@@ -117,7 +121,26 @@ bool sendFileViaSim(const String &filePath)
 
   if (!sendOk)
   {
-    Serial.println("[TX] JPEG stream failed");
+    Serial.println("[TX] JPEG stream failed — reading server response");
+    // Server may have sent an early HTTP response (4xx/5xx) that caused the TCP close.
+    // CIPRXGET buffer mode retains data even after TCP closes, so this can still succeed.
+    String earlyResp = simTcpReadResponse(0, 5000);
+    if (!earlyResp.isEmpty())
+    {
+      int code = -1;
+      int si   = earlyResp.indexOf("HTTP/1.");
+      if (si != -1)
+      {
+        int sp = earlyResp.indexOf(' ', si);
+        if (sp != -1) code = earlyResp.substring(sp + 1, sp + 4).toInt();
+      }
+      Serial.printf("[TX] Server early response HTTP %d:\n", code);
+      Serial.println(earlyResp.substring(0, min((int)earlyResp.length(), 600)));
+    }
+    else
+    {
+      Serial.println("[TX] No server response buffered");
+    }
     simTcpClose(0); simNetClose();
     return false;
   }

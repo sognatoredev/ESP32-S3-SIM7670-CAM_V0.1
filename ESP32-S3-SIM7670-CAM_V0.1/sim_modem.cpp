@@ -561,16 +561,54 @@ bool simTcpSendChunk(int link, const uint8_t *data, size_t len)
   Serial.print("\r\n>> "); Serial.println(cmd);
   SimSerial.println(cmd);
 
-  if (simWaitFor(">", 5000).indexOf(">") == -1)
+  // Wait for '>' prompt; break immediately on ERROR so we don't stall 5 s on a closed link.
+  String promptResp = "";
+  uint32_t t = millis();
+  while (millis() - t < 5000)
+  {
+    while (SimSerial.available())
+    {
+      char c = (char)SimSerial.read();
+      promptResp += c;
+      Serial.write(c);
+    }
+    if (promptResp.indexOf('>') != -1) break;
+    if (promptResp.indexOf("ERROR") != -1) break;
+  }
+
+  if (promptResp.indexOf('>') == -1)
   {
     Serial.println("[TCP] CIPSEND: no '>' prompt");
     return false;
   }
+  Serial.println("[TCP] > prompt OK — sending data");
 
   SimSerial.write(data, len);
   SimSerial.flush();
 
-  String resp = simWaitFor("+CIPSEND:", 10000);
+  // Wait for +CIPSEND: ACK; also abort immediately on ERROR to avoid 10 s stall.
+  String resp = "";
+  uint32_t t2 = millis();
+  while (millis() - t2 < 10000)
+  {
+    while (SimSerial.available())
+    {
+      char c = (char)SimSerial.read();
+      resp += c;
+      Serial.write(c);
+    }
+    if (resp.indexOf("+CIPSEND:") != -1) break;
+    if (resp.indexOf("ERROR")     != -1) break;
+  }
+
+  if (resp.indexOf("OK") != -1)
+    Serial.println("[TCP] SEND OK");
+
+  // If server closed the connection while we were waiting, the modem queues a
+  // +CIPCLOSE: URC inside the CIPSEND response window — catch it here.
+  if (resp.indexOf("+CIPCLOSE:") != -1)
+    Serial.println("[TCP] +CIPCLOSE detected in CIPSEND window — server closed connection");
+
   int ci = resp.indexOf("+CIPSEND:");
   if (ci == -1) { Serial.println("[TCP] CIPSEND: no response"); return false; }
 
@@ -585,6 +623,46 @@ bool simTcpSendChunk(int link, const uint8_t *data, size_t len)
   Serial.printf("[TCP] CIPSEND req=%d cnf=%d\n", req, cnf);
   // cnf < 0 → connection dropped; cnf == 0 → TCP send buffer full
   return (cnf > 0 && cnf == req);
+}
+
+// Non-blocking poll: if the modem's CIPRXGET buffer already has data, read and return it.
+// Returns "" when there is nothing buffered yet.  Used to detect early server responses
+// (e.g. HTTP 4xx/5xx sent before the full request body is received).
+String simTcpPollResponse(int link)
+{
+  String qCmd = "AT+CIPRXGET=4," + String(link);
+  SimSerial.println(qCmd);
+  Serial.print("\r\n>> "); Serial.println(qCmd);
+  String qr = simWaitFor("OK", 1000);
+
+  int qi = qr.indexOf("+CIPRXGET: 4,");
+  if (qi == -1) return "";
+
+  int c1 = qr.indexOf(',', qi + 13);
+  if (c1 == -1) return "";
+  int lineEnd = qr.indexOf('\n', c1 + 1);
+  int pending = qr.substring(c1 + 1,
+                              lineEnd == -1 ? (int)qr.length() : lineEnd).toInt();
+  if (pending == 0) return "";
+
+  int toRead = min(pending, 1500);
+  String rCmd = "AT+CIPRXGET=2," + String(link) + "," + String(toRead);
+  SimSerial.println(rCmd);
+  Serial.print("\r\n>> "); Serial.println(rCmd);
+  String dr = simWaitFor("OK", 3000);
+
+  int di = dr.indexOf("+CIPRXGET: 2,");
+  if (di == -1) return "";
+  int nl = dr.indexOf('\n', di);
+  if (nl == -1) return "";
+
+  String hdr = dr.substring(di, nl);
+  int hc1 = hdr.indexOf(',', 13);
+  int hc2 = hdr.indexOf(',', hc1 + 1);
+  int dataLen = hdr.substring(hc1 + 1,
+                               hc2 == -1 ? (int)hdr.length() : hc2).toInt();
+  if (dataLen <= 0) return "";
+  return dr.substring(nl + 1, nl + 1 + dataLen);
 }
 
 // Read buffered HTTP response after all request data has been sent.
@@ -649,7 +727,9 @@ String simTcpReadResponse(int link, uint32_t timeoutMs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SIM7670G init  (115200 fixed)
+// SIM7670G init
+//   Boot at SIM_BAUD_INIT (115200) then upgrade to SIM_BAUD_FAST (230400).
+//   AT+IPR is volatile — reverts to 115200 on power-off, so it is set every boot.
 // ─────────────────────────────────────────────────────────────────────────────
 bool simInit()
 {
@@ -673,11 +753,53 @@ bool simInit()
     Serial.println("[SIM] No modem response — init failed");
     return false;
   }
-  Serial.println("[SIM] 115200 bps OK");
+  Serial.println("[SIM] " + String(SIM_BAUD_INIT) + " bps OK");
 
   // Disable echo: CIPSEND binary chunks are echoed back with ATE1, which injects
   // null bytes into String responses and breaks indexOf("+CIPSEND:").
   simSendAT("ATE0", 1000);
+
+  // ── Baud-rate upgrade ────────────────────────────────────────────────────
+  // AT+IPR is volatile: resets to 115200 on every power-off, so upgrade each boot.
+  // Modem sends OK at the current (115200) baud rate and then immediately switches.
+  Serial.println("[SIM] Supported baud rates: " + simSendAT("AT+IPR=?", 5000));
+  Serial.println("[SIM] Upgrading baud to " + String(SIM_BAUD_FAST) + " bps...");
+  simSendAT("AT+IPR=" + String(SIM_BAUD_FAST), 5000);  // datasheet max response time 5000 ms
+  delay(100);                 // modem settling time after baud switch
+  SimSerial.end();
+  delay(50);
+  SimSerial.begin(SIM_BAUD_FAST, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
+  delay(100);
+  simFlush(50);               // drain any line noise from UART reinitialization
+
+  bool upgraded = false;
+  for (int i = 0; i < 5 && !upgraded; i++)
+  {
+    if (simSendAT("AT", 1000).indexOf("OK") != -1)
+      upgraded = true;
+    else
+      delay(200);
+  }
+
+  if (!upgraded)
+  {
+    // Revert to default baud so the device can continue operating
+    Serial.println("[SIM] Baud upgrade failed — reverting to " + String(SIM_BAUD_INIT) + " bps");
+    SimSerial.end();
+    delay(50);
+    SimSerial.begin(SIM_BAUD_INIT, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
+    delay(100);
+    if (simSendAT("AT", 2000).indexOf("OK") == -1)
+    {
+      Serial.println("[SIM] Revert failed — modem unresponsive");
+      return false;
+    }
+    Serial.println("[SIM] Reverted to " + String(SIM_BAUD_INIT) + " bps");
+  }
+  else
+  {
+    Serial.println("[SIM] " + String(SIM_BAUD_FAST) + " bps OK");
+  }
 
   // Network status
   Serial.println("[SIM] CGREG: " + simSendAT("AT+CGREG?", 3000));

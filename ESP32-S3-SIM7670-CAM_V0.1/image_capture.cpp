@@ -10,7 +10,9 @@
 #include "SD_MMC.h"
 #include <Arduino.h>
 
-static uint32_t captureCount = 0;   // fallback counter when NTP not synced
+static uint32_t captureCount  = 0;   // fallback counter when NTP not synced
+int             g_captureTarget = 1; // set cnt <n> — send after every n captures
+static int      s_captureAccum  = 0; // captures accumulated since last TX
 
 void captureAndSave()
 {
@@ -46,8 +48,8 @@ void captureAndSave()
   int         prevQuality   = s->status.quality;
   // s->set_framesize(s, FRAMESIZE_FHD); // default.
   // s->set_framesize(s, FRAMESIZE_HD); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_HD 1280x720
-  // s->set_framesize(s, FRAMESIZE_XGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_XGA 1024x768    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
-  s->set_framesize(s, FRAMESIZE_SVGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_SVGA 800x600    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
+  s->set_framesize(s, FRAMESIZE_XGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_XGA 1024x768    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
+  // s->set_framesize(s, FRAMESIZE_SVGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_SVGA 800x600    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
   s->set_quality(s, 12);
   delay(300);
 
@@ -156,10 +158,30 @@ void captureAndSave()
   }
   Serial.printf("[CAP] Saved: %s (%u bytes)\n", filePath, (unsigned)written);
 
+  s_captureAccum++;
+  Serial.printf("[CAP] Accumulated %d/%d\n", s_captureAccum, g_captureTarget);
+
   if (simReady)
   {
-    sendWithRetry(String(filePath));
-    retryPendingFiles();
+    if (s_captureAccum >= g_captureTarget)
+    {
+      s_captureAccum = 0;
+      if (g_captureTarget == 1)
+      {
+        sendWithRetry(String(filePath));
+        retryPendingFiles();
+      }
+      else
+      {
+        // Send all accumulated RTU files (oldest first)
+        retryPendingFiles();
+      }
+    }
+    else
+    {
+      Serial.printf("[CAP] Waiting for %d more capture(s) before TX\n",
+                    g_captureTarget - s_captureAccum);
+    }
   }
   else
   {

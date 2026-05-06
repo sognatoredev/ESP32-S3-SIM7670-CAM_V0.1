@@ -7,3 +7,7 @@ extern bool sdReady;
 bool sdSetup();
 void sdMkdirRecursive(const char *dirPath);
 void sdRemoveAll();
+
+// Persist runtime settings to /config.txt and restore them on boot.
+void loadConfig();
+void saveConfig();

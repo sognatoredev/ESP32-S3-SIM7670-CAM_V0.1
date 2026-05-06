@@ -19,7 +19,8 @@
 #define SIM_RX_PIN      17
 #define SIM_TX_PIN      18
 #define SIM_PWRKEY_PIN  21    // PWRKEY: LOW pulse to power on/off
-#define SIM_BAUD_INIT   115200
+#define SIM_BAUD_INIT   115200   // default power-on baud rate
+#define SIM_BAUD_FAST   115200   // upgraded rate set via AT+IPR every boot
 
 // PWRKEY pulse durations (ms)
 #define SIM_PWRON_PULSE_MS   1200   // > 1 s to power on
@@ -39,7 +40,8 @@
 // 8-char boundary ("1818FFFF") is too short — a 79 KB JPEG can contain \r\n--1818FFFF
 // as an accidental byte sequence, causing the server multipart parser to truncate the
 // image halfway.  A 28-char boundary makes accidental collision practically impossible.
-#define HTTP_BOUNDARY       "ImageBoundary1818FFFF00000000"
+// #define HTTP_BOUNDARY       "ImageBoundary1818FFFF00000000"
+#define HTTP_BOUNDARY       "1818FFFF"
 
 // ===========================
 // SD card pins & folder structure

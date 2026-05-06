@@ -3,6 +3,7 @@
 
 extern bool   ntpSynced;
 extern time_t nextCaptureTime;
+extern int    g_captureIntervalMin;  // capture interval in minutes (default 10)
 
 void   timeSyncInit();
 time_t calcNextBoundary();

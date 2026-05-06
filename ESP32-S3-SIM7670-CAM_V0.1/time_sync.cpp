@@ -4,8 +4,9 @@
 #include <Arduino.h>
 #include <sys/time.h>
 
-bool   ntpSynced       = false;
-time_t nextCaptureTime = 0;
+bool   ntpSynced          = false;
+time_t nextCaptureTime    = 0;
+int    g_captureIntervalMin = 10;   // set intv <n> — capture every n minutes
 
 bool applyKSTTime(const char *kstTimeStr)
 {
@@ -103,5 +104,6 @@ time_t calcNextBoundary()
 {
   time_t now;
   time(&now);
-  return ((now / 600) + 1) * 600;
+  long intervalSec = (long)g_captureIntervalMin * 60L;
+  return ((now / intervalSec) + 1) * intervalSec;
 }

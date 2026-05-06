@@ -1,7 +1,11 @@
 #include "sd_storage.h"
 #include "config.h"
+#include "image_capture.h"
+#include "time_sync.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
+
+#define CONFIG_PATH "/config.txt"
 
 bool sdReady = false;
 
@@ -88,4 +92,86 @@ void sdRemoveAll()
 
   uint64_t after = SD_MMC.usedBytes();
   Serial.printf("[SD] Done. Freed ~%llu KB\n", (before - after) / 1024ULL);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config file  /config.txt
+//   Format (one key=value per line):
+//     intv=10
+//     cnt=1
+// ─────────────────────────────────────────────────────────────────────────────
+
+void loadConfig()
+{
+  if (!sdReady)
+  {
+    Serial.println("[CFG] SD not ready — using defaults");
+    return;
+  }
+
+  File f = SD_MMC.open(CONFIG_PATH, FILE_READ);
+  if (!f)
+  {
+    Serial.println("[CFG] No config.txt — using defaults");
+    return;
+  }
+
+  int loaded = 0;
+  while (f.available())
+  {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0 || line.startsWith("#")) continue;
+
+    int eq = line.indexOf('=');
+    if (eq == -1) continue;
+
+    String key = line.substring(0, eq);
+    String val = line.substring(eq + 1);
+    key.trim();
+    val.trim();
+    int v = val.toInt();
+
+    if (key == "intv" && v >= 1 && v <= 1440)
+    {
+      g_captureIntervalMin = v;
+      loaded++;
+    }
+    else if (key == "cnt" && v >= 1 && v <= 100)
+    {
+      g_captureTarget = v;
+      loaded++;
+    }
+    else
+    {
+      Serial.printf("[CFG] Unknown or invalid: %s=%s\n", key.c_str(), val.c_str());
+    }
+  }
+  f.close();
+
+  Serial.printf("[CFG] Loaded %d setting(s) — intv=%d min  cnt=%d\n",
+                loaded, g_captureIntervalMin, g_captureTarget);
+}
+
+void saveConfig()
+{
+  if (!sdReady)
+  {
+    Serial.println("[CFG] SD not ready — cannot save");
+    return;
+  }
+
+  File f = SD_MMC.open(CONFIG_PATH, FILE_WRITE);
+  if (!f)
+  {
+    Serial.println("[CFG] Cannot open config.txt for write");
+    return;
+  }
+
+  f.printf("intv=%d\n", g_captureIntervalMin);
+  f.printf("cnt=%d\n",  g_captureTarget);
+  f.close();
+
+  Serial.printf("[CFG] Saved — intv=%d min  cnt=%d\n",
+                g_captureIntervalMin, g_captureTarget);
 }

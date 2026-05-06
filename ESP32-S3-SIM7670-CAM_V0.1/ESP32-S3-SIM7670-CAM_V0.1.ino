@@ -7,6 +7,7 @@
 #include "image_capture.h"
 #include "app_httpd.h"
 #include <WiFi.h>
+#include <time.h>
 
 void setup()
 {
@@ -34,6 +35,7 @@ void setup()
   {
     sdReady = true;
     ledBlink(0, 255, 0, 2, 200);    // green x2: SD OK
+    loadConfig();                    // restore saved settings (intv, cnt)
   }
   else
   {
@@ -135,15 +137,57 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SD] Not ready");
     }
   }
+  else if (cmd.startsWith("set intv "))
+  {
+    int val = cmd.substring(9).toInt();
+    if (val >= 1 && val <= 1440)
+    {
+      g_captureIntervalMin = val;
+      if (ntpSynced)
+      {
+        nextCaptureTime = calcNextBoundary();
+        struct tm nextTm;
+        localtime_r(&nextCaptureTime, &nextTm);
+        Serial.printf("[SET] Capture interval = %d min  (next: %02d:%02d:00 KST)\n",
+                      g_captureIntervalMin, nextTm.tm_hour, nextTm.tm_min);
+      }
+      else
+      {
+        Serial.printf("[SET] Capture interval = %d min\n", g_captureIntervalMin);
+      }
+      saveConfig();
+    }
+    else
+    {
+      Serial.println("[SET] intv: value must be 1–1440 (minutes)");
+    }
+  }
+  else if (cmd.startsWith("set cnt "))
+  {
+    int val = cmd.substring(8).toInt();
+    if (val >= 1 && val <= 100)
+    {
+      g_captureTarget = val;
+      Serial.printf("[SET] Capture count = %d (send after every %d capture(s))\n",
+                    g_captureTarget, g_captureTarget);
+      saveConfig();
+    }
+    else
+    {
+      Serial.println("[SET] cnt: value must be 1–100");
+    }
+  }
   else if (cmd == "help")
   {
     Serial.println("[CMD] Available commands:");
-    Serial.println("  test capture — capture image, save to SD, send to server now");
-    Serial.println("  sim on       — power on modem (PWRKEY) and re-init");
-    Serial.println("  sim off      — power off modem (PWRKEY)");
-    Serial.println("  remove sd    — delete ALL files on SD card");
-    Serial.println("  sd info      — show SD card usage");
-    Serial.println("  help         — show this list");
+    Serial.println("  test capture  — capture image, save to SD, send to server now");
+    Serial.println("  set intv <n>  — capture interval in minutes (1–1440, default 10)");
+    Serial.println("  set cnt  <n>  — captures before TX (1–100, default 1)");
+    Serial.println("  sim on        — power on modem (PWRKEY) and re-init");
+    Serial.println("  sim off       — power off modem (PWRKEY)");
+    Serial.println("  remove sd     — delete ALL files on SD card");
+    Serial.println("  sd info       — show SD card usage");
+    Serial.println("  help          — show this list");
   }
   else
   {
