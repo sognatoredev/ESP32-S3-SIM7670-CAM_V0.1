@@ -7,6 +7,9 @@
 
 #define CONFIG_PATH "/config.txt"
 
+// Forward declaration — saveConfig is defined after loadConfig in this file.
+void saveConfig();
+
 bool sdReady = false;
 
 bool sdSetup()
@@ -112,7 +115,8 @@ void loadConfig()
   File f = SD_MMC.open(CONFIG_PATH, FILE_READ);
   if (!f)
   {
-    Serial.println("[CFG] No config.txt — using defaults");
+    Serial.println("[CFG] No config.txt — creating with defaults");
+    saveConfig();
     return;
   }
 
