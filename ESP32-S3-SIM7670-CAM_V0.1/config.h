@@ -66,3 +66,9 @@
 // ===========================
 #define DEVICE_BATTERY_LEVEL 100
 #define DEVICE_TEMPERATURE   25
+
+// ===========================
+// Setup AP mode
+// ===========================
+#define SETUP_AP_SSID        "WP_Test_01"
+#define SETUP_AP_TIMEOUT_MS  (5UL * 60UL * 1000UL)   // 5분

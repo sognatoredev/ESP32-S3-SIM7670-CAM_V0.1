@@ -6,6 +6,7 @@
 #include "sim_modem.h"
 #include "image_capture.h"
 #include "app_httpd.h"
+#include "setup_server.h"
 #include <WiFi.h>
 #include <time.h>
 
@@ -59,23 +60,9 @@ void setup()
     Serial.println("[SIM] Init failed — WiFi-only mode");
   }
 
-  // ── WiFi ──
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.setSleep(false);
-  Serial.print("[WiFi] Connecting");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    ledSet(50, 50, 0);  delay(250);
-    ledSet(0,  0,  0);  delay(250);
-    Serial.print(".");
-  }
-  Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
-
-  // ── NTP sync ──
-  timeSyncInit();
-
-  Serial.println("[SYS] Ready (WiFi stream/capture disabled)");
-  ledSet(0, 40, 0);   // green: standby
+  // ── Setup mode (WiFi AP + 설정 페이지) ──
+  // 5분 타임아웃 또는 "운영 시작" 버튼 → 운영 모드로 전환
+  enterSetupMode();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +237,11 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
+  else if (cmd == "setup mode")
+  {
+    Serial.println("[CMD] Re-entering setup mode...");
+    enterSetupMode();
+  }
   else if (cmd == "help")
   {
     Serial.println("[CMD] Available commands:");
@@ -262,6 +254,7 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
     Serial.println("  sd info             — show SD card usage");
+    Serial.println("  setup mode          — re-enter setup mode (AP + config page)");
     Serial.println("  help                — show this list");
   }
   else
@@ -270,9 +263,42 @@ static void handleSerialCmd(const String &cmd)
   }
 }
 
+// 운영 모드로 첫 진입 시 WiFi 연결 + NTP 동기화
+static void initOperationMode()
+{
+  Serial.println("[SYS] Initializing operation mode...");
+  ledSet(50, 50, 0);
+
+  WiFi.setSleep(false);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("[WiFi] Connecting");
+
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000UL)
+  {
+    ledSet(50, 50, 0); delay(250);
+    ledSet(0,  0,  0); delay(250);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
+    timeSyncInit();
+  }
+  else
+  {
+    Serial.println("\n[WiFi] Connection failed — NTP sync skipped");
+    ledBlink(255, 0, 0, 3, 300);
+  }
+
+  ledSet(0, 40, 0);   // green: standby
+  Serial.println("[SYS] Operation mode ready");
+}
+
 void loop()
 {
-  // ── Serial command input ──
+  // ── Serial command input (setup/operation 모드 공통) ──
   while (Serial.available())
   {
     char c = Serial.read();
@@ -292,7 +318,31 @@ void loop()
     }
   }
 
-  // ── 10-minute capture scheduler ──
+  // ── Setup mode ──
+  if (g_setupMode)
+  {
+    setupServerLoop();
+    delay(50);
+    return;
+  }
+
+  // ── 운영 모드 초기화 (setup mode 종료 후 1회) ──
+  static bool s_operationInited = false;
+  if (!s_operationInited)
+  {
+    s_operationInited = true;
+    initOperationMode();
+  }
+
+  // setup mode 재진입 시 다음 복귀를 위해 플래그 리셋
+  if (g_setupMode)
+  {
+    s_operationInited = false;
+    delay(50);
+    return;
+  }
+
+  // ── 캡처 스케줄러 ──
   if (ntpSynced && nextCaptureTime > 0)
   {
     time_t now;
