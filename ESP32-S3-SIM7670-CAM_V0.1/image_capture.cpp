@@ -10,9 +10,11 @@
 #include "SD_MMC.h"
 #include <Arduino.h>
 
-static uint32_t captureCount  = 0;   // fallback counter when NTP not synced
-int             g_captureTarget = 1; // set cnt <n> — send after every n captures
-static int      s_captureAccum  = 0; // captures accumulated since last TX
+static uint32_t captureCount    = 0;   // fallback counter when NTP not synced
+int             g_captureTarget = 1;   // set cnt <n> — send after every n captures
+static int      s_captureAccum  = 0;   // captures accumulated since last TX
+int             g_lastCaptureWidth  = 0;   // resolution of most recent capture
+int             g_lastCaptureHeight = 0;
 
 void captureAndSave()
 {
@@ -100,6 +102,8 @@ void captureAndSave()
           uint16_t sofW = ((uint16_t)fb->buf[i+7] << 8) | fb->buf[i+8];
           Serial.printf("[CAP] JPEG SOF: %u x %u  (fb: %u x %u)  size=%u bytes\n",
                         sofW, sofH, fb->width, fb->height, (unsigned)imgLen);
+          g_lastCaptureWidth  = sofW;
+          g_lastCaptureHeight = sofH;
           sofFound = true;
           break;
         }
@@ -157,6 +161,7 @@ void captureAndSave()
     return;
   }
   Serial.printf("[CAP] Saved: %s (%u bytes)\n", filePath, (unsigned)written);
+  saveConfig();   // update Image Resolution in config.txt
 
   s_captureAccum++;
   Serial.printf("[CAP] Accumulated %d/%d\n", s_captureAccum, g_captureTarget);

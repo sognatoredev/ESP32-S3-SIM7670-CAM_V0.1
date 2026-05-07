@@ -51,6 +51,7 @@ void setup()
   {
     ledBlink(0, 0, 255, 3, 200);    // blue x3: modem OK
     Serial.println("[SIM] Ready");
+    saveConfig();                    // refresh m2_point_id / m2_device_id in config.txt
   }
   else
   {
@@ -78,8 +79,72 @@ void setup()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// get <field> — print a single config/device value to Serial
+// ─────────────────────────────────────────────────────────────────────────────
+static void handleGetCmd(const String &field)
+{
+  if (field.equalsIgnoreCase("Model Prefix"))
+    Serial.printf("[GET] Model Prefix     : %s\n",        DEVICE_MODEL_PREFIX);
+  else if (field.equalsIgnoreCase("Serial Number"))
+    Serial.printf("[GET] Serial Number    : %s\n",        DEVICE_UNIT_CODE);
+  else if (field.equalsIgnoreCase("FW Build Date"))
+    Serial.printf("[GET] FW Build Date    : %s %s\n",     __DATE__, __TIME__);
+  else if (field.equalsIgnoreCase("Server Host"))
+    Serial.printf("[GET] Server Host      : %s\n",        SERVER_HOST);
+  else if (field.equalsIgnoreCase("Server Port"))
+    Serial.printf("[GET] Server Port      : %d\n",        SERVER_PORT);
+  else if (field.equalsIgnoreCase("NTP Server"))
+    Serial.printf("[GET] NTP Server       : %s\n",        NTP_SERVER);
+  else if (field.equalsIgnoreCase("Time Zone"))
+    Serial.printf("[GET] Time Zone        : UTC+%d\n",    (int)(NTP_GMT_OFFSET / 3600L));
+  else if (field.equalsIgnoreCase("WiFi SSID"))
+    Serial.printf("[GET] WiFi SSID        : %s\n",        WIFI_SSID);
+  else if (field.equalsIgnoreCase("WiFi PW"))
+    Serial.printf("[GET] WiFi PW          : %s\n",        WIFI_PASSWORD);
+  else if (field.equalsIgnoreCase("m2_point_id"))
+    Serial.printf("[GET] m2_point_id      : %d\n",        g_m2PointId);
+  else if (field.equalsIgnoreCase("m2_device_id"))
+    Serial.printf("[GET] m2_device_id     : %d\n",        g_m2DeviceId);
+  else if (field.equalsIgnoreCase("Battery"))
+    Serial.printf("[GET] Battery          : %d%%\n",      DEVICE_BATTERY_LEVEL);
+  else if (field.equalsIgnoreCase("Sim Baud Rate"))
+    Serial.printf("[GET] Sim Baud Rate    : %d bps\n",    SIM_BAUD_FAST);
+  else if (field.equalsIgnoreCase("Mesure_Mode"))
+    Serial.println("[GET] Mesure_Mode      : -");
+  else if (field.equalsIgnoreCase("Image Resolution"))
+  {
+    if (g_lastCaptureWidth > 0)
+      Serial.printf("[GET] Image Resolution : %d x %d\n", g_lastCaptureWidth, g_lastCaptureHeight);
+    else
+      Serial.println("[GET] Image Resolution : - (no capture yet)");
+  }
+  else if (field.equalsIgnoreCase("Image Capture Intv") || field.equalsIgnoreCase("intv"))
+    Serial.printf("[GET] Image Capture Intv : %d min\n",  g_captureIntervalMin);
+  else if (field.equalsIgnoreCase("Image Capture Cnt") || field.equalsIgnoreCase("cnt"))
+    Serial.printf("[GET] Image Capture Cnt  : %d\n",      g_captureTarget);
+  else if (field.isEmpty() || field.equalsIgnoreCase("help"))
+  {
+    Serial.println("[GET] Available fields:");
+    Serial.println("  Model Prefix        Serial Number       FW Build Date");
+    Serial.println("  Server Host         Server Port         NTP Server");
+    Serial.println("  Time Zone           WiFi SSID           WiFi PW");
+    Serial.println("  m2_point_id         m2_device_id        Battery");
+    Serial.println("  Sim Baud Rate       Mesure_Mode         Image Resolution");
+    Serial.println("  Image Capture Intv  (or: intv)");
+    Serial.println("  Image Capture Cnt   (or: cnt)");
+  }
+  else
+  {
+    Serial.printf("[GET] Unknown field: \"%s\"  (type \"get help\" for list)\n", field.c_str());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Serial command handler
 //   "test capture" — capture one image, save to SD, send to server immediately
+//   "get <field>"  — print a device/config value
+//   "set intv <n>" — set capture interval in minutes
+//   "set cnt  <n>" — set captures before TX
 //   "sim on"       — power on  SIM7670G modem (PWRKEY pulse) and re-init
 //   "sim off"      — power off SIM7670G modem (PWRKEY pulse)
 //   "remove sd"    — delete all files on the SD card
@@ -137,6 +202,14 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SD] Not ready");
     }
   }
+  else if (cmd.startsWith("get "))
+  {
+    handleGetCmd(cmd.substring(4));
+  }
+  else if (cmd == "get")
+  {
+    handleGetCmd("");
+  }
   else if (cmd.startsWith("set intv "))
   {
     int val = cmd.substring(9).toInt();
@@ -180,14 +253,16 @@ static void handleSerialCmd(const String &cmd)
   else if (cmd == "help")
   {
     Serial.println("[CMD] Available commands:");
-    Serial.println("  test capture  — capture image, save to SD, send to server now");
-    Serial.println("  set intv <n>  — capture interval in minutes (1–1440, default 10)");
-    Serial.println("  set cnt  <n>  — captures before TX (1–100, default 1)");
-    Serial.println("  sim on        — power on modem (PWRKEY) and re-init");
-    Serial.println("  sim off       — power off modem (PWRKEY)");
-    Serial.println("  remove sd     — delete ALL files on SD card");
-    Serial.println("  sd info       — show SD card usage");
-    Serial.println("  help          — show this list");
+    Serial.println("  test capture        — capture image, save to SD, send to server now");
+    Serial.println("  get <field>         — print a device/config value");
+    Serial.println("  get help            — list all gettable fields");
+    Serial.println("  set intv <n>        — capture interval in minutes (1–1440, default 10)");
+    Serial.println("  set cnt  <n>        — captures before TX (1–100, default 1)");
+    Serial.println("  sim on              — power on modem (PWRKEY) and re-init");
+    Serial.println("  sim off             — power off modem (PWRKEY)");
+    Serial.println("  remove sd           — delete ALL files on SD card");
+    Serial.println("  sd info             — show SD card usage");
+    Serial.println("  help                — show this list");
   }
   else
   {

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "image_capture.h"
 #include "time_sync.h"
+#include "sim_modem.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
 
@@ -125,10 +126,10 @@ void loadConfig()
   {
     String line = f.readStringUntil('\n');
     line.trim();
-    if (line.length() == 0 || line.startsWith("#")) continue;
+    if (line.length() == 0) continue;
 
     int eq = line.indexOf('=');
-    if (eq == -1) continue;
+    if (eq == -1) continue;   // info lines (no '=') are silently skipped
 
     String key = line.substring(0, eq);
     String val = line.substring(eq + 1);
@@ -146,10 +147,7 @@ void loadConfig()
       g_captureTarget = v;
       loaded++;
     }
-    else
-    {
-      Serial.printf("[CFG] Unknown or invalid: %s=%s\n", key.c_str(), val.c_str());
-    }
+    // unknown keys are silently ignored
   }
   f.close();
 
@@ -172,6 +170,34 @@ void saveConfig()
     return;
   }
 
+  // ── Info section ─────────────────────────────────────────────────────────
+  // Lines without '=' are skipped by loadConfig(), so no special marker needed.
+  f.println("**************************************************");
+  f.println(" Device Info  (auto-generated — do not edit)");
+  f.println("**************************************************");
+  f.printf (" Model Prefix    : %s\n",      DEVICE_MODEL_PREFIX);
+  f.printf (" Serial Number   : %s\n",      DEVICE_UNIT_CODE);
+  f.printf (" FW Build Date   : %s %s\n",   __DATE__, __TIME__);
+  f.printf (" Server Host     : %s\n",      SERVER_HOST);
+  f.printf (" Server Port     : %d\n",      SERVER_PORT);
+  f.printf (" NTP Server      : %s\n",      NTP_SERVER);
+  f.printf (" Time Zone       : UTC+%d\n",  (int)(NTP_GMT_OFFSET / 3600L));
+  f.printf (" WiFi SSID       : %s\n",      WIFI_SSID);
+  f.printf (" WiFi PW         : %s\n",      WIFI_PASSWORD);
+  f.printf (" m2_point_id     : %d\n",      g_m2PointId);
+  f.printf (" m2_device_id    : %d\n",      g_m2DeviceId);
+  f.printf (" Battery         : %d%%\n",    DEVICE_BATTERY_LEVEL);
+  f.printf (" Sim Baud Rate   : %d bps\n",  SIM_BAUD_FAST);
+  f.println(" Mesure_Mode     : -");
+  if (g_lastCaptureWidth > 0)
+    f.printf(" Image Resolution: %d x %d\n", g_lastCaptureWidth, g_lastCaptureHeight);
+  else
+    f.println(" Image Resolution: -");
+  f.println("**************************************************");
+  f.println();
+  f.println(" [Settings] edit values below to change behavior");
+
+  // ── Settings section (machine-readable) ──────────────────────────────────
   f.printf("intv=%d\n", g_captureIntervalMin);
   f.printf("cnt=%d\n",  g_captureTarget);
   f.close();
