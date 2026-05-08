@@ -9,6 +9,8 @@
 #include "img_converters.h" // frame2jpg
 #include <WiFi.h>
 #include <Arduino.h>
+#include <math.h>           // sinf()
+#include "esp_timer.h"      // esp_timer_get_time() — μs 정밀 하드웨어 타이머
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 전역 상태
@@ -304,6 +306,47 @@ static void startSetupHttpd()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 호흡 무드등 — setup mode 동안 플래시 LED(GPIO1) 를 White 로 천천히 점멸
+//
+//   [타이밍] esp_timer_get_time() (하드웨어 μs 타이머) 사용
+//            loop() delay 나 WiFi 처리 지연에 무관하게 항상 정확한 위상 계산
+//
+//   [파형]   sin² 감마 보정 적용
+//            linear = 0.5 + 0.5·sin(2π·t/T − π/2)   ← 0→1→0 정규화
+//            brightness = linear² × 255               ← 감마 보정 (저밝기 부드럽게)
+//
+//            linear sin:  0→20→127→240→255  (저밝기에서 급격히 올라가 플리커 느낌)
+//            sin² 보정:   0→ 2→ 64→225→255  (저밝기를 매우 서서히 시작)
+//
+//   [주기]   2000ms (변경하려면 BREATH_PERIOD_MS 수정)
+//   [속도]   16ms 마다 갱신 (~62Hz) — 50ms loop 내에서도 정밀 타이밍 유지
+// ─────────────────────────────────────────────────────────────────────────────
+#define BREATH_PERIOD_MS  2000U
+
+static void breathingLedUpdate()
+{
+  static uint32_t s_lastUpdate = 0;
+
+  // esp_timer_get_time(): 부팅 이후 μs 단위 하드웨어 카운터
+  // → millis() 보다 WiFi/루프 지연의 영향을 받지 않아 위상 계산이 정확함
+  uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+  if (now_ms - s_lastUpdate < 16) return;   // ~62Hz 상한
+  s_lastUpdate = now_ms;
+
+  // ── 정규화된 선형값 (0.0 ~ 1.0) ─────────────────────────────────
+  float phase  = (float)(now_ms % BREATH_PERIOD_MS)
+                 / (float)BREATH_PERIOD_MS
+                 * 2.0f * (float)M_PI;
+  float linear = 0.5f + 0.5f * sinf(phase - (float)M_PI / 2.0f);
+
+  // ── sin² 감마 보정: 저밝기 구간을 부드럽게 ─────────────────────
+  uint8_t brightness = (uint8_t)(linear * linear * 255.0f);
+
+  flashLedSet(brightness, brightness, brightness);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // setup 모드 종료 (내부용)
 // ─────────────────────────────────────────────────────────────────────────────
 static void exitSetupMode()
@@ -315,6 +358,9 @@ static void exitSetupMode()
     httpd_stop(s_httpd);
     s_httpd = NULL;
   }
+
+  // 호흡 무드등 끄기
+  flashLedSet(0, 0, 0);
 
   // AP 종료 & WiFi 모드 전환
   WiFi.softAPdisconnect(true);
@@ -353,14 +399,17 @@ void setupServerLoop()
 {
   if (!g_setupMode) return;
 
-  // 5분 타임아웃
+  // ── 호흡 무드등 ──
+  breathingLedUpdate();
+
+  // ── 5분 타임아웃 ──
   if (millis() - g_setupStartMs >= SETUP_AP_TIMEOUT_MS) {
     Serial.println("[SETUP] Timeout (5 min) — auto-exiting setup mode");
     exitSetupMode();
     return;
   }
 
-  // "운영 시작" 버튼 처리
+  // ── "운영 시작" 버튼 처리 ──
   if (s_startRequested) {
     s_startRequested = false;
     exitSetupMode();

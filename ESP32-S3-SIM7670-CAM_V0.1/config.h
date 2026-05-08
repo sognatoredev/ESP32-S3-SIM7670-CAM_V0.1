@@ -57,8 +57,11 @@
 // ===========================
 // WS2812B LED
 // ===========================
-#define WS2812_PIN 38
-#define WS2812_NUM  1
+#define WS2812_PIN  38          // 상태 표시 LED (1개)
+#define WS2812_NUM   1
+
+#define WS2812_FLASH_PIN  1     // 카메라 플래시 LED (8개, GPIO1)
+#define WS2812_FLASH_NUM  8
 
 // ===========================
 // Device sensor placeholders

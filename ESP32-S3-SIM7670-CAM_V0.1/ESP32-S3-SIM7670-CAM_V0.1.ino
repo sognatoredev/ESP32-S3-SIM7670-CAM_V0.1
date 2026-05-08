@@ -237,6 +237,16 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
+  else if (cmd == "led on")
+  {
+    flashLedSet(255, 255, 255);
+    Serial.println("[CMD] Flash LEDs ON (white, max brightness)");
+  }
+  else if (cmd == "led off")
+  {
+    flashLedSet(0, 0, 0);
+    Serial.println("[CMD] Flash LEDs OFF");
+  }
   else if (cmd == "setup mode")
   {
     Serial.println("[CMD] Re-entering setup mode...");
@@ -254,6 +264,8 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
     Serial.println("  sd info             — show SD card usage");
+    Serial.println("  led on              — flash LEDs (GPIO1 x8) white max brightness");
+    Serial.println("  led off             — flash LEDs OFF");
     Serial.println("  setup mode          — re-enter setup mode (AP + config page)");
     Serial.println("  help                — show this list");
   }
@@ -322,7 +334,7 @@ void loop()
   if (g_setupMode)
   {
     setupServerLoop();
-    delay(50);
+    delay(20);   // 20ms: 호흡 무드등 ~50Hz 갱신을 위해 50ms → 20ms
     return;
   }
 

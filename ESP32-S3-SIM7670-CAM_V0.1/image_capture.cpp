@@ -65,9 +65,14 @@ void captureAndSave()
   }
 
   // Flash on -> capture -> flash off
-  ledSet(255, 255, 255);  delay(200);
+  // GPIO38 상태 LED + GPIO1 플래시 8개 동시 점등
+  ledSet(255, 255, 255);
+  flashLedSet(255, 255, 255);
+  // delay(200);
+  delay(50); // 2026.05.08 csh : 이미지 캡처시 WS2812B 8 ch flash 기능 적용 딜레이 테스트
   camera_fb_t *fb = esp_camera_fb_get();
-  ledSet(0, 40, 0);
+  flashLedSet(0, 0, 0);   // 플래시 먼저 끄기
+  ledSet(0, 40, 0);        // 상태 LED 복구
 
   // Restore streaming resolution and quality
   s->set_framesize(s, prevFramesize);
