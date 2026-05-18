@@ -104,10 +104,14 @@ bool sendFileViaSim(const String &filePath)
   while (f.available() && sendOk)
   {
     size_t rd = f.read(buf, sizeof(buf));
-    // delay(50);
-    // delay(5); // 2026.05.06 csh : CIPSEND 간 딜레이 50으로 했을때 성공 확인 후 5로 변경 테스트 결과 : ERROR 발생되는 경우 확인함
-    delay(10); // 2026.05.06 csh : CIPSEND 간 딜레이 50으로 했을때 성공 확인 후 5로 변경 테스트
     sendOk = simTcpSendChunk(0, buf, rd);
+    if (sendOk)
+    {
+      // AT+CIPACK flow control: wait until modem TCP buffer drains below 4096 bytes.
+      // This replaces the old fixed delay(10/50) — adapts to actual LTE uplink speed
+      // and prevents the ~6 KB modem TCP send buffer from overflowing mid-transfer.
+      simTcpWaitAck(0, 4096, 5000);
+    }
     bytesSent += rd;
 
     if (bytesSent - lastReport >= 4096 || !f.available())

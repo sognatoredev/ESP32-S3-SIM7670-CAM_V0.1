@@ -31,6 +31,7 @@ void   simNetClose();
 bool   simTcpOpen(int link, const char *host, int port);
 void   simTcpClose(int link);
 bool   simTcpSendChunk(int link, const uint8_t *data, size_t len);
+bool   simTcpWaitAck(int link, size_t maxUnacked, uint32_t timeoutMs);  // AT+CIPACK flow control
 String simTcpPollResponse(int link);          // fast non-blocking: returns buffered data or ""
 String simTcpReadResponse(int link, uint32_t timeoutMs);
 

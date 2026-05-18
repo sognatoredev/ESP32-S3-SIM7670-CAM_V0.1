@@ -625,6 +625,52 @@ bool simTcpSendChunk(int link, const uint8_t *data, size_t len)
   return (cnf > 0 && cnf == req);
 }
 
+// AT+CIPACK flow control: poll until unacknowledged bytes <= maxUnacked, or timeout.
+// SIM7670G TCP send buffer is ~6 KB.  UART pushes ~11.5 KB/s at 115200 baud, which is
+// faster than LTE uplink drain — so we must gate each chunk on actual TCP ACKs from
+// the server rather than using a fixed inter-chunk delay.
+//
+// AT+CIPACK=<link>  →  +CIPACK: <txlen>,<acklen>,<nacklen>
+//   txlen   : total bytes sent to modem TCP stack so far (cumulative)
+//   acklen  : bytes ACKed by remote peer (cumulative)
+//   nacklen : txlen - acklen = bytes still in modem TCP buffer, NOT yet ACKed
+//
+// Returns true when nacklen <= maxUnacked within timeoutMs.
+// Returns false on timeout (caller should treat subsequent chunk as risky).
+bool simTcpWaitAck(int link, size_t maxUnacked, uint32_t timeoutMs)
+{
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs)
+  {
+    String cmd = "AT+CIPACK=" + String(link);
+    Serial.print("\r\n>> "); Serial.println(cmd);
+    SimSerial.println(cmd);
+    String resp = simWaitFor("OK", 2000);
+
+    // +CIPACK: <txlen>,<acklen>,<nacklen>
+    int ci = resp.indexOf("+CIPACK:");
+    if (ci != -1)
+    {
+      int c1 = resp.indexOf(',', ci);
+      int c2 = resp.indexOf(',', c1 + 1);
+      int c3 = resp.indexOf('\n', c2 + 1);
+      if (c1 != -1 && c2 != -1)
+      {
+        int nacklen = resp.substring(c2 + 1,
+                                     c3 == -1 ? (int)resp.length() : c3).toInt();
+        Serial.printf("[TCP] CIPACK nacklen=%d (max=%u)\n",
+                      nacklen, (unsigned)maxUnacked);
+        if ((size_t)nacklen <= maxUnacked)
+          return true;
+      }
+    }
+    delay(50);   // 50 ms poll interval — gives LTE ~50 ms to drain before re-querying
+  }
+  Serial.printf("[TCP] CIPACK wait timeout (%u ms) — proceeding anyway\n",
+                (unsigned)timeoutMs);
+  return false;
+}
+
 // Non-blocking poll: if the modem's CIPRXGET buffer already has data, read and return it.
 // Returns "" when there is nothing buffered yet.  Used to detect early server responses
 // (e.g. HTTP 4xx/5xx sent before the full request body is received).
