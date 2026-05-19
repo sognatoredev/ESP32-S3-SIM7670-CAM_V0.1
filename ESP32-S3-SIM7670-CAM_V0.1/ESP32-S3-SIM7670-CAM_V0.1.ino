@@ -1,13 +1,13 @@
 #include "config.h"
 #include "led.h"
 #include "camera_mgr.h"
+#include "battery.h"
 #include "sd_storage.h"
 #include "time_sync.h"
 #include "sim_modem.h"
 #include "image_capture.h"
 #include "app_httpd.h"
 #include "setup_server.h"
-#include "battery.h"
 #include <WiFi.h>
 #include <time.h>
 
@@ -27,6 +27,10 @@ void setup()
     Serial.println("[CAM] Init failed, halting");
     return;
   }
+
+  // ── Battery gauge init (Wire는 cameraInit() 내부에서 이미 초기화됨) ──
+  if (!batteryInit())
+    Serial.println("[BAT] MAX17048 not found — battery level fixed at 100%");
 
 #if defined(LED_GPIO_NUM)
   setupLedFlash();
@@ -95,9 +99,10 @@ static void handleGetCmd(const String &field)
     Serial.printf("[GET] m2_device_id     : %d\n",        g_m2DeviceId);
   else if (field.equalsIgnoreCase("Battery"))
   {
-    batteryRead();   // always fresh value
-    Serial.printf("[GET] Battery          : %d%%  (%.3f V)\n",
-                  g_batteryPercent, g_batteryVoltage);
+    if (batteryRead())
+      Serial.printf("[GET] Battery          : %d%%  (%.3f V)\n", g_batteryPercent, g_batteryVoltage);
+    else
+      Serial.printf("[GET] Battery          : MAX17048 not ready — last known %d%%\n", g_batteryPercent);
   }
   else if (field.equalsIgnoreCase("Sim Baud Rate"))
     Serial.printf("[GET] Sim Baud Rate    : %d bps\n",    SIM_BAUD_FAST);
@@ -242,12 +247,13 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
-  else if (cmd == "battery")
+  else if (cmd == "bat init")
   {
-    if (batteryRead())
-      Serial.printf("[BAT] %.3f V  %d%%\n", g_batteryVoltage, g_batteryPercent);
+    Serial.println("[CMD] Re-running batteryInit()...");
+    if (batteryInit())
+      Serial.printf("[BAT] Init OK  %d%%  (%.3f V)\n", g_batteryPercent, g_batteryVoltage);
     else
-      Serial.println("[BAT] Not available (MAX17048 not detected)");
+      Serial.println("[BAT] Init FAILED — IC not found");
   }
   else if (cmd == "led on")
   {
@@ -272,11 +278,11 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  get help            — list all gettable fields");
     Serial.println("  set intv <n>        — capture interval in minutes (1–1440, default 10)");
     Serial.println("  set cnt  <n>        — captures before TX (1–100, default 1)");
-    Serial.println("  battery             — read battery voltage and level from MAX17048");
     Serial.println("  sim on              — power on modem (PWRKEY) and re-init");
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
     Serial.println("  sd info             — show SD card usage");
+    Serial.println("  bat init            — re-run MAX17048 init + I2C bus scan");
     Serial.println("  led on              — flash LEDs (GPIO1 x8) white max brightness");
     Serial.println("  led off             — flash LEDs OFF");
     Serial.println("  setup mode          — re-enter setup mode (AP + config page)");
@@ -316,15 +322,6 @@ static void initOperationMode()
     Serial.println("\n[WiFi] Connection failed — NTP sync skipped");
     ledBlink(255, 0, 0, 3, 300);
   }
-
-  // ── Battery gauge init ──
-  // Placed here (after WiFi + NTP) so Serial is fully stable and any
-  // crash or error from i2c_master_get_bus_handle() is visible in the log.
-  Serial.flush();
-  if (batteryInit())
-    ledBlink(0, 255, 128, 2, 200);  // cyan x2: battery gauge OK
-  else
-    Serial.println("[BAT] Gauge not available — using default 100%");
 
   ledSet(0, 40, 0);   // green: standby
   Serial.println("[SYS] Operation mode ready");

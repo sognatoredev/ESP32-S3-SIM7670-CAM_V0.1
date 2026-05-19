@@ -1,25 +1,15 @@
 #pragma once
-#include <stdint.h>
 
-// ── MAX17048G+T10  1-cell Li-Ion/LiPo Fuel Gauge ─────────────────────────────
-// I²C address : 0x36  (fixed)
-// SDA / SCL   : GPIO15 / GPIO16  (same physical bus as camera SCCB)
+// MAX17048G+T10  1-cell Li-Ion/LiPo Fuel Gauge
+// I2C address : 0x36  (fixed)
+// SDA / SCL   : GPIO15 / GPIO16  (카메라 SCCB 버스 공유)
 //
-// Implementation note:
-//   Wire / TwoWire is NOT used.
-//   sccb-ng calls i2c_driver_install() (legacy ESP-IDF I2C driver) on I2C_NUM_0
-//   during cameraInit().  MAX17048 (0x36) and OV5640 camera (0x3C) share the
-//   same GPIO15/16 bus — batteryInit() simply reuses that installed driver and
-//   targets address 0x36.  No second driver install, no new-API handle needed.
-//
-// Call order:
-//   cameraInit()   ← sccb-ng installs legacy I2C driver on I2C_NUM_0
-//   batteryInit()  ← shares the same driver, targets 0x36
-// ─────────────────────────────────────────────────────────────────────────────
+// camera_mgr.cpp 에서 esp_camera_init() 전에 ESP-IDF legacy I2C driver 를 I2C_NUM_0 에 설치.
+// sccb_i2c_port=0 으로 카메라가 해당 드라이버를 재사용하고,
+// battery.cpp 도 i2c_master_write_read_device(I2C_NUM_0, ...) 로 같은 드라이버를 공유.
 
-extern int   g_batteryPercent;   // 0–100 %  (updated by batteryRead)
-extern float g_batteryVoltage;   // V        (updated by batteryRead)
+extern float g_batteryVoltage;   // V  (예: 3.85)
+extern int   g_batteryPercent;   // %  (0–100)
 
-bool batteryInit();    // must be called AFTER cameraInit()
-bool batteryRead();    // read VCELL + SOC, update globals
-bool batteryIsReady(); // true if batteryInit() succeeded
+bool batteryInit();   // IC 탐색 + 첫 읽기. 미발견 시 false 반환
+bool batteryRead();   // 전압·잔량 갱신. s_ready == false 이면 즉시 false

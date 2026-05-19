@@ -64,12 +64,10 @@
 #define WS2812_FLASH_NUM  8
 
 // ===========================
-// Device sensors
-// DEVICE_BATTERY_LEVEL → MAX17048 fuel gauge via battery.h (GPIO15/16, I2C_NUM_1)
+// Device sensor placeholders
 // ===========================
-#include "battery.h"
-#define DEVICE_BATTERY_LEVEL g_batteryPercent   // live value updated by batteryRead()
-#define DEVICE_TEMPERATURE   25                 // TODO: replace with actual sensor
+// DEVICE_BATTERY_LEVEL 는 battery.h 의 g_batteryPercent 로 대체됨
+#define DEVICE_TEMPERATURE   25
 
 // ===========================
 // Setup AP mode

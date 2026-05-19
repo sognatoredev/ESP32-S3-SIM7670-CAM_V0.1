@@ -1,5 +1,6 @@
 #include "sim_modem.h"
 #include "config.h"
+#include "battery.h"
 #include "time_sync.h"
 #include <Arduino.h>
 
@@ -377,6 +378,10 @@ bool simPostDeviceStatus(const SimInfo &info)
     }
   }
 
+  // POST 직전 배터리 최신값 갱신
+  batteryRead();
+  Serial.printf("[BAT] %.3f V  %d%%\n", g_batteryVoltage, g_batteryPercent);
+
   // All parameters go into the URL query string (space → %20)
   char url[512];
   snprintf(url, sizeof(url),
@@ -391,7 +396,7 @@ bool simPostDeviceStatus(const SimInfo &info)
     "&Device_SW_Ver=%s",
     SERVER_HOST, SERVER_PORT,
     DEVICE_MODEL_PREFIX, DEVICE_UNIT_CODE,
-    DEVICE_BATTERY_LEVEL,
+    g_batteryPercent,
     DEVICE_TEMPERATURE,
     year, mon, day, hh, mm, ss,
     info.strength, info.rssi, info.sinr,

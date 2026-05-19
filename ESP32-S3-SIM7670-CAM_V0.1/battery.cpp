@@ -2,33 +2,26 @@
 #include <Wire.h>
 #include <Arduino.h>
 
-// ── MAX17048 register map ─────────────────────────────────────────────────────
-#define MAX17048_ADDR  0x36
-#define REG_VCELL      0x02   // 78.125 µV / LSB  (big-endian 16-bit)
-#define REG_SOC        0x04   // upper byte = integer %, lower = 1/256 %
-#define REG_VERSION    0x08   // version / presence check
+// Wire(I2C_NUM_0) 는 camera_mgr.cpp 에서 esp_camera_init() 전에 초기화됨.
+// pin_sccb_sda/scl = -1, sccb_i2c_port = 0 설정으로 카메라가 Wire 버스를 공유하며,
+// 여기서도 동일한 Wire 인스턴스로 MAX17048 에 접근함.
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Wire.begin() is called inside cameraInit() BEFORE esp_camera_init().
-// sccb-ng reuses that Wire bus (sccb_i2c_port = 0).
-// batteryInit() / batteryRead() simply call Wire directly — no ESP-IDF
-// I2C driver headers needed, no driver_ng / old-driver conflict possible.
-// ─────────────────────────────────────────────────────────────────────────────
+static constexpr uint8_t MAX17048_ADDR = 0x36;
+static constexpr uint8_t REG_VCELL     = 0x02;  // 전압 (78.125 µV/LSB, big-endian)
+static constexpr uint8_t REG_SOC       = 0x04;  // 잔량 (상위 8bit=정수%, 하위 8bit=1/256%)
+static constexpr uint8_t REG_VERSION   = 0x08;  // IC 존재 확인
 
-int   g_batteryPercent = 100;
 float g_batteryVoltage = 0.0f;
+int   g_batteryPercent = 100;
 
 static bool s_ready = false;
 
-// ── Read 2 bytes from a MAX17048 register ────────────────────────────────────
-// Tries repeated-start first; falls back to STOP+START if that fails.
+// MAX17048 레지스터 2바이트 읽기. 실패 시 0xFFFF 반환.
 static uint16_t readReg(uint8_t reg)
 {
-  // Method A: write reg addr with repeated-start, then read 2 bytes
   Wire.beginTransmission(MAX17048_ADDR);
   Wire.write(reg);
-  uint8_t err = Wire.endTransmission(false);   // false = repeated start
-  if (err == 0)
+  if (Wire.endTransmission(false) == 0)  // repeated-start
   {
     if (Wire.requestFrom((uint8_t)MAX17048_ADDR, (uint8_t)2) == 2)
     {
@@ -37,12 +30,10 @@ static uint16_t readReg(uint8_t reg)
       return ((uint16_t)h << 8) | l;
     }
   }
-
-  // Method B: STOP then new START (some I2C controllers prefer this)
+  // fallback: STOP → new START
   Wire.beginTransmission(MAX17048_ADDR);
   Wire.write(reg);
-  err = Wire.endTransmission(true);            // true = STOP
-  if (err != 0) return 0xFFFF;
+  if (Wire.endTransmission(true) != 0) return 0xFFFF;
   delayMicroseconds(200);
   if (Wire.requestFrom((uint8_t)MAX17048_ADDR, (uint8_t)2) == 2)
   {
@@ -53,19 +44,16 @@ static uint16_t readReg(uint8_t reg)
   return 0xFFFF;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// batteryInit  — must be called AFTER cameraInit()
-// ─────────────────────────────────────────────────────────────────────────────
 bool batteryInit()
 {
-  Serial.println("[BAT] Probing I2C bus for MAX17048...");
+  s_ready = false;
+  Serial.println("[BAT] Probing MAX17048 on I2C bus...");
 
-  // ── Step 1: simple ACK probe ──────────────────────────────────────────────
   Wire.beginTransmission(MAX17048_ADDR);
   uint8_t probe = Wire.endTransmission(true);
   Serial.printf("[BAT] Wire.probe(0x36) = %d  (0=ACK, else=NACK/error)\n", probe);
 
-  // ── Step 2: full bus scan (shows all responding devices) ─────────────────
+  // I2C 버스 전체 스캔 (디버그용)
   Serial.print("[BAT] I2C scan: ");
   bool anyFound = false;
   for (uint8_t a = 1; a < 127; a++)
@@ -80,14 +68,13 @@ bool batteryInit()
   if (!anyFound) Serial.print("(none)");
   Serial.println();
 
-  // ── Step 3: read VERSION register ────────────────────────────────────────
   uint16_t ver = readReg(REG_VERSION);
   Serial.printf("[BAT] VERSION reg = 0x%04X  (%s)\n",
                 ver, ver == 0xFFFF ? "FAIL" : "OK");
 
   if (ver == 0xFFFF)
   {
-    Serial.println("[BAT] MAX17048 not found — using default 100%");
+    Serial.println("[BAT] MAX17048 not found — battery level fixed at 100%%");
     return false;
   }
 
@@ -97,11 +84,6 @@ bool batteryInit()
   return true;
 }
 
-bool batteryIsReady() { return s_ready; }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// batteryRead
-// ─────────────────────────────────────────────────────────────────────────────
 bool batteryRead()
 {
   if (!s_ready) return false;
@@ -116,6 +98,7 @@ bool batteryRead()
   }
 
   g_batteryVoltage = (float)vcell * 78.125e-6f;
+
   float soc_f      = (float)(soc >> 8) + (float)(soc & 0xFF) / 256.0f;
   g_batteryPercent = (int)soc_f;
   if (g_batteryPercent > 100) g_batteryPercent = 100;
