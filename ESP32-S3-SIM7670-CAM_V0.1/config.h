@@ -65,9 +65,8 @@
 
 // ===========================
 // Device sensor placeholders
-// TODO: replace with actual ADC / sensor reads
 // ===========================
-#define DEVICE_BATTERY_LEVEL 100
+// DEVICE_BATTERY_LEVEL 는 battery.h 의 g_batteryPercent 로 대체됨
 #define DEVICE_TEMPERATURE   25
 
 // ===========================

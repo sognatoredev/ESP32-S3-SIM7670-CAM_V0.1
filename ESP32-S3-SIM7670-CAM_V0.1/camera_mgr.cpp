@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "led.h"
 #include <Arduino.h>
+#include <Wire.h>
 
 framesize_t   current_cam_framesize;
 int           current_cam_quality;
@@ -23,9 +24,13 @@ bool cameraInit()
   config.pin_pclk     = PCLK_GPIO_NUM;
   config.pin_vsync    = VSYNC_GPIO_NUM;
   config.pin_href     = HREF_GPIO_NUM;
-  config.pin_sccb_sda = SIOD_GPIO_NUM;
-  config.pin_sccb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn     = PWDN_GPIO_NUM;
+  // pin_sccb_sda/scl 를 -1 로 설정하면 esp_camera 가 자체 GPIO 초기화를 건너뛰고
+  // sccb_i2c_port=0 으로 Wire(I2C_NUM_0) 의 버스를 그대로 재사용함.
+  // 이렇게 해야 Wire 와 카메라 SCCB 가 같은 드라이버(driver_ng) 를 공유할 수 있음.
+  config.pin_sccb_sda  = -1;
+  config.pin_sccb_scl  = -1;
+  config.sccb_i2c_port = 0;
+  config.pin_pwdn      = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
@@ -62,6 +67,10 @@ bool cameraInit()
   pinMode(13, INPUT_PULLUP);
   pinMode(14, INPUT_PULLUP);
 #endif
+
+  // Wire 를 먼저 초기화해야 esp_camera_init() 이 sccb_i2c_port=0 으로
+  // 동일한 Wire 버스 핸들(driver_ng)을 재사용할 수 있음.
+  Wire.begin(SIOD_GPIO_NUM, SIOC_GPIO_NUM, 400000);
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK)

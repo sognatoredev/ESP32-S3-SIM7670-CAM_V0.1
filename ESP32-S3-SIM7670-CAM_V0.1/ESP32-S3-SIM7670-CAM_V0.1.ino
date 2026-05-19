@@ -1,6 +1,7 @@
 #include "config.h"
 #include "led.h"
 #include "camera_mgr.h"
+#include "battery.h"
 #include "sd_storage.h"
 #include "time_sync.h"
 #include "sim_modem.h"
@@ -26,6 +27,10 @@ void setup()
     Serial.println("[CAM] Init failed, halting");
     return;
   }
+
+  // ── Battery gauge init (Wire는 cameraInit() 내부에서 이미 초기화됨) ──
+  if (!batteryInit())
+    Serial.println("[BAT] MAX17048 not found — battery level fixed at 100%");
 
 #if defined(LED_GPIO_NUM)
   setupLedFlash();
@@ -93,7 +98,12 @@ static void handleGetCmd(const String &field)
   else if (field.equalsIgnoreCase("m2_device_id"))
     Serial.printf("[GET] m2_device_id     : %d\n",        g_m2DeviceId);
   else if (field.equalsIgnoreCase("Battery"))
-    Serial.printf("[GET] Battery          : %d%%\n",      DEVICE_BATTERY_LEVEL);
+  {
+    if (batteryRead())
+      Serial.printf("[GET] Battery          : %d%%  (%.3f V)\n", g_batteryPercent, g_batteryVoltage);
+    else
+      Serial.printf("[GET] Battery          : MAX17048 not ready — last known %d%%\n", g_batteryPercent);
+  }
   else if (field.equalsIgnoreCase("Sim Baud Rate"))
     Serial.printf("[GET] Sim Baud Rate    : %d bps\n",    SIM_BAUD_FAST);
   else if (field.equalsIgnoreCase("Mesure_Mode"))
@@ -237,6 +247,14 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
+  else if (cmd == "bat init")
+  {
+    Serial.println("[CMD] Re-running batteryInit()...");
+    if (batteryInit())
+      Serial.printf("[BAT] Init OK  %d%%  (%.3f V)\n", g_batteryPercent, g_batteryVoltage);
+    else
+      Serial.println("[BAT] Init FAILED — IC not found");
+  }
   else if (cmd == "led on")
   {
     flashLedSet(255, 255, 255);
@@ -264,6 +282,7 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
     Serial.println("  sd info             — show SD card usage");
+    Serial.println("  bat init            — re-run MAX17048 init + I2C bus scan");
     Serial.println("  led on              — flash LEDs (GPIO1 x8) white max brightness");
     Serial.println("  led off             — flash LEDs OFF");
     Serial.println("  setup mode          — re-enter setup mode (AP + config page)");

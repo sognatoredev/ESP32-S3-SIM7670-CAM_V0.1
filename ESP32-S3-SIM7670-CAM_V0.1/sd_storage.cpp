@@ -1,5 +1,6 @@
 #include "sd_storage.h"
 #include "config.h"
+#include "battery.h"
 #include "image_capture.h"
 #include "time_sync.h"
 #include "sim_modem.h"
@@ -186,7 +187,7 @@ void saveConfig()
   f.printf (" WiFi PW         : %s\n",      WIFI_PASSWORD);
   f.printf (" m2_point_id     : %d\n",      g_m2PointId);
   f.printf (" m2_device_id    : %d\n",      g_m2DeviceId);
-  f.printf (" Battery         : %d%%\n",    DEVICE_BATTERY_LEVEL);
+  f.printf (" Battery         : %d%%\n",    g_batteryPercent);
   f.printf (" Sim Baud Rate   : %d bps\n",  SIM_BAUD_FAST);
   f.println(" Mesure_Mode     : -");
   if (g_lastCaptureWidth > 0)
