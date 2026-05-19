@@ -6,7 +6,6 @@
 #include "image_tx.h"
 #include "led.h"
 #include "app_httpd.h"
-#include "battery.h"
 #include "esp_camera.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
@@ -172,29 +171,13 @@ void captureAndSave()
   s_captureAccum++;
   Serial.printf("[CAP] Accumulated %d/%d\n", s_captureAccum, g_captureTarget);
 
-  // ── Battery: 캡처 직후 무조건 갱신 (시리얼 연결 구간에서 항상 확인 가능) ──
-  if (!batteryIsReady())
-  {
-    Serial.println("[BAT] Init (capture context)...");
-    batteryInit();
-  }
-  else
-  {
-    batteryRead();
-  }
-  Serial.printf("[BAT] %s  %.3f V  %d%%\n",
-                batteryIsReady() ? "OK" : "FAIL",
-                g_batteryVoltage, g_batteryPercent);
-
   if (simReady)
   {
     if (s_captureAccum >= g_captureTarget)
     {
       s_captureAccum = 0;
 
-      // POST device status just before image TX so the server logs
-      // signal strength / battery / timestamp at the moment of capture.
-      Serial.println("[CAP] Posting device status before TX...");
+      // 이미지 전송 전 디바이스 상태 POST (모뎀 신호·배터리·시간 포함)
       SimInfo info = simGetInfo();
       simPostDeviceStatus(info);
 
