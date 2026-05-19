@@ -362,9 +362,13 @@ static void exitSetupMode()
   // 호흡 무드등 끄기
   flashLedSet(0, 0, 0);
 
-  // AP 종료 & WiFi 모드 전환
+  // AP 종료 후 WiFi 완전 종료.
+  // WIFI_STA 로 전환하면 STA netif 가 먼저 생성되고,
+  // 이후 WiFi.begin() 이 wifi_init_default() 에서 콜백을 중복 등록해
+  // "netstack cb reg failed" 에러가 발생함.
+  // WIFI_OFF 로 완전히 내린 뒤 WiFi.begin() 이 깨끗하게 초기화하도록 함.
   WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_OFF);
 
   g_setupMode = false;
   ledSet(0, 40, 0);   // green: standby
