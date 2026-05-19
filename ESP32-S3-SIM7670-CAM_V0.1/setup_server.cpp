@@ -94,7 +94,7 @@ static const char HTML_TEMPLATE[] =
     "i.onerror=function(){busy=false;};"
     "i.src='/capture?t='+Date.now();"
   "}"
-  "setInterval(refreshImg,2000);"
+  "setInterval(refreshImg,1000);"
   "function saveCfg(){"
     "var intv=document.getElementById('intv').value;"
     "var cnt=document.getElementById('cnt').value;"
