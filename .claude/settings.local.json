@@ -3,7 +3,16 @@
     "allow": [
       "PowerShell(python --version 2>$null)",
       "PowerShell(py --version 2>$null)",
-      "PowerShell($pdfPath = \"C:\\\\00.Work\\\\01.Project\\\\022.���ڿ�����_�̹���ĸó\\\\02.DataSheet\\\\SIM7670\\\\SIM7672X_SIM7652X_Series_HTTP\\(S\\)_Application_Note_V1.00.pdf\")"
+      "PowerShell($pdfPath = \"C:\\\\00.Work\\\\01.Project\\\\022.���ڿ�����_�̹���ĸó\\\\02.DataSheet\\\\SIM7670\\\\SIM7672X_SIM7652X_Series_HTTP\\(S\\)_Application_Note_V1.00.pdf\")",
+      "WebSearch",
+      "WebFetch(domain:files.waveshare.com)",
+      "WebFetch(domain:www.waveshare.com)",
+      "WebFetch(domain:docs.waveshare.com)",
+      "WebFetch(domain:spotpear.com)",
+      "WebFetch(domain:wiki.makerfabs.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:learn.adafruit.com)",
+      "WebFetch(domain:datacapturecontrol.com)"
     ]
   }
 }

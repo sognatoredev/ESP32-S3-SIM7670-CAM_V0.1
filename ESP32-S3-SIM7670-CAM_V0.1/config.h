@@ -64,11 +64,12 @@
 #define WS2812_FLASH_NUM  8
 
 // ===========================
-// Device sensor placeholders
-// TODO: replace with actual ADC / sensor reads
+// Device sensors
+// DEVICE_BATTERY_LEVEL → MAX17048 fuel gauge via battery.h (GPIO15/16, I2C_NUM_1)
 // ===========================
-#define DEVICE_BATTERY_LEVEL 100
-#define DEVICE_TEMPERATURE   25
+#include "battery.h"
+#define DEVICE_BATTERY_LEVEL g_batteryPercent   // live value updated by batteryRead()
+#define DEVICE_TEMPERATURE   25                 // TODO: replace with actual sensor
 
 // ===========================
 // Setup AP mode

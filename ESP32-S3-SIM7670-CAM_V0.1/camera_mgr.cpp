@@ -1,6 +1,7 @@
 #include "camera_mgr.h"
 #include "board_config.h"
 #include "led.h"
+#include <Wire.h>
 #include <Arduino.h>
 
 framesize_t   current_cam_framesize;
@@ -23,9 +24,10 @@ bool cameraInit()
   config.pin_pclk     = PCLK_GPIO_NUM;
   config.pin_vsync    = VSYNC_GPIO_NUM;
   config.pin_href     = HREF_GPIO_NUM;
-  config.pin_sccb_sda = SIOD_GPIO_NUM;
-  config.pin_sccb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn     = PWDN_GPIO_NUM;
+  config.pin_sccb_sda   = SIOD_GPIO_NUM;
+  config.pin_sccb_scl   = SIOC_GPIO_NUM;
+  config.sccb_i2c_port  = 0;   // reuse Wire's I2C_NUM_0 — avoids driver conflict
+  config.pin_pwdn       = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
@@ -62,6 +64,10 @@ bool cameraInit()
   pinMode(13, INPUT_PULLUP);
   pinMode(14, INPUT_PULLUP);
 #endif
+
+  // Initialize I2C bus BEFORE camera so sccb-ng reuses it (sccb_i2c_port=0)
+  // and batteryInit() can also use Wire without any driver conflict.
+  Wire.begin(SIOD_GPIO_NUM, SIOC_GPIO_NUM, 400000);
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK)

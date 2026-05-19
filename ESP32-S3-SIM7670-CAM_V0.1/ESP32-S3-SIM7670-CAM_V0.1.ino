@@ -7,6 +7,7 @@
 #include "image_capture.h"
 #include "app_httpd.h"
 #include "setup_server.h"
+#include "battery.h"
 #include <WiFi.h>
 #include <time.h>
 
@@ -93,7 +94,11 @@ static void handleGetCmd(const String &field)
   else if (field.equalsIgnoreCase("m2_device_id"))
     Serial.printf("[GET] m2_device_id     : %d\n",        g_m2DeviceId);
   else if (field.equalsIgnoreCase("Battery"))
-    Serial.printf("[GET] Battery          : %d%%\n",      DEVICE_BATTERY_LEVEL);
+  {
+    batteryRead();   // always fresh value
+    Serial.printf("[GET] Battery          : %d%%  (%.3f V)\n",
+                  g_batteryPercent, g_batteryVoltage);
+  }
   else if (field.equalsIgnoreCase("Sim Baud Rate"))
     Serial.printf("[GET] Sim Baud Rate    : %d bps\n",    SIM_BAUD_FAST);
   else if (field.equalsIgnoreCase("Mesure_Mode"))
@@ -237,6 +242,13 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
+  else if (cmd == "battery")
+  {
+    if (batteryRead())
+      Serial.printf("[BAT] %.3f V  %d%%\n", g_batteryVoltage, g_batteryPercent);
+    else
+      Serial.println("[BAT] Not available (MAX17048 not detected)");
+  }
   else if (cmd == "led on")
   {
     flashLedSet(255, 255, 255);
@@ -260,6 +272,7 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  get help            — list all gettable fields");
     Serial.println("  set intv <n>        — capture interval in minutes (1–1440, default 10)");
     Serial.println("  set cnt  <n>        — captures before TX (1–100, default 1)");
+    Serial.println("  battery             — read battery voltage and level from MAX17048");
     Serial.println("  sim on              — power on modem (PWRKEY) and re-init");
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
@@ -303,6 +316,15 @@ static void initOperationMode()
     Serial.println("\n[WiFi] Connection failed — NTP sync skipped");
     ledBlink(255, 0, 0, 3, 300);
   }
+
+  // ── Battery gauge init ──
+  // Placed here (after WiFi + NTP) so Serial is fully stable and any
+  // crash or error from i2c_master_get_bus_handle() is visible in the log.
+  Serial.flush();
+  if (batteryInit())
+    ledBlink(0, 255, 128, 2, 200);  // cyan x2: battery gauge OK
+  else
+    Serial.println("[BAT] Gauge not available — using default 100%");
 
   ledSet(0, 40, 0);   // green: standby
   Serial.println("[SYS] Operation mode ready");
