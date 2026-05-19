@@ -176,6 +176,11 @@ void captureAndSave()
     if (s_captureAccum >= g_captureTarget)
     {
       s_captureAccum = 0;
+
+      // 이미지 전송 전 디바이스 상태 POST (모뎀 신호·배터리·시간 포함)
+      SimInfo info = simGetInfo();
+      simPostDeviceStatus(info);
+
       if (g_captureTarget == 1)
       {
         sendWithRetry(String(filePath));
