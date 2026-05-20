@@ -406,7 +406,7 @@ void loop()
   {
     time_t now;
     time(&now);
-    // 2초 여유: Wake-up → 주변장치 복귀 + 카메라 안정화 시간 확보
+    // 2초 여유: Wake-up → SIM 재초기화(~15초) 는 sleepSec 외 별도 진행
     int64_t sleepSec = (int64_t)(nextCaptureTime - now) - 2LL;
 
     if (sleepSec > 5)
@@ -418,12 +418,13 @@ void loop()
 
       // ── Sleep 전 주변장치 절전 처리 ─────────────────────────────────
 
-      // [A] SIM7670G 슬립 모드 (LTE 라디오 저속 클럭, ~60mA → ~2mA)
-      // UART RX 신호로 즉시 복귀 가능 (재부팅·재등록 불필요)
+      // [B] SIM7670G 완전 전원 차단 (LTE DRX 사이클 완전 제거, ~60mA → 0mA)
+      // Wake-up 후 simPowerOn()+simInit() 로 재초기화 (~15초 소요)
       if (simReady)
       {
-        simSendAT("AT+CSCLK=2", 1000);
-        Serial.println("[SYS] SIM7670 sleep (CSCLK=2)");
+        simPowerOff();
+        simReady = false;
+        Serial.println("[SYS] SIM7670 powered OFF");
       }
 
       // [C] OV5640 소프트웨어 대기 모드 (레지스터 0x3008 bit6, ~12mA → ~1mA)
@@ -446,15 +447,38 @@ void loop()
 
       // ── Wake-up 복귀 ─────────────────────────────────────────────────
 
-      // [A] SIM7670G 슬립 해제
-      // sleep 전 전송한 \r 이 모뎀을 깨우고, AT+CSCLK=0 으로 정상 복귀
+      ledSet(0, 0, 50);  // blue: SIM 재초기화 중
+
+      esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+      switch (wakeCause)
+      {
+        case ESP_SLEEP_WAKEUP_TIMER:
+          Serial.println("[SYS] Wake: Timer (capture due)");
+          break;
+        case ESP_SLEEP_WAKEUP_UART:
+          Serial.println("[SYS] Wake: UART (Serial input)");
+          delay(50);   // UART 수신 버퍼 안정화 (첫 바이트 손실 보정)
+          break;
+        default:
+          Serial.printf("[SYS] Wake: cause=%d\n", (int)wakeCause);
+          break;
+      }
+
+      // [B] SIM7670G 전원 복구 + 재초기화 (~15초)
+      // ntpSynced=true 이므로 simConnect() 내부에서 CNTP 재동기화는 생략됨
+      // LTE 재등록 → simPostDeviceStatus → simGetDeviceSetting 순으로 수행
+      Serial.println("[SYS] SIM7670 powering ON...");
+      simPowerOn();
+      simReady = simInit();
       if (simReady)
       {
-        SimSerial.write('\r');           // 모뎀 wake 트리거 (UART RX 활성)
-        delay(300);                      // 모뎀 클럭 안정화 대기
-        simFlush(50);                    // 잔류 바이트 제거
-        simSendAT("AT+CSCLK=0", 2000);  // 슬립 모드 해제
-        Serial.println("[SYS] SIM7670 awake (CSCLK=0)");
+        ledBlink(0, 0, 255, 2, 150);
+        Serial.println("[SYS] SIM7670 ready");
+      }
+      else
+      {
+        ledBlink(255, 80, 0, 3, 200);
+        Serial.println("[SYS] SIM7670 reinit failed — image will be retried next cycle");
       }
 
       // [C] OV5640 소프트웨어 대기 해제
@@ -466,20 +490,6 @@ void loop()
       }
 
       ledSet(0, 40, 0);  // green: 활성 상태 복구
-
-      switch (esp_sleep_get_wakeup_cause())
-      {
-        case ESP_SLEEP_WAKEUP_TIMER:
-          Serial.println("[SYS] Wake: Timer (capture due)");
-          break;
-        case ESP_SLEEP_WAKEUP_UART:
-          Serial.println("[SYS] Wake: UART (Serial input)");
-          delay(50);   // UART 수신 버퍼 안정화 (첫 바이트 손실 보정)
-          break;
-        default:
-          Serial.printf("[SYS] Wake: cause=%d\n", esp_sleep_get_wakeup_cause());
-          break;
-      }
     }
     else
     {
