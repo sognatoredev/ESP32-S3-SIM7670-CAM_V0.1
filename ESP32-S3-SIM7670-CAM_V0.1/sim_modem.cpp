@@ -36,46 +36,56 @@ void simPowerOn()
   Serial.println(" done");
 }
 
+// 펌웨어별 Power-Down URC 판별
+// - 표준:       "NORMAL POWER DOWN"
+// - SIM7670G:   "POWERD DOWN"  (firmware 오탈자 고유 문자열)
+// - 일부 변종:  "POWER DOWN"
+static bool isPowerDownUrc(const String &s)
+{
+  return s.indexOf("NORMAL POWER DOWN") != -1 ||
+         s.indexOf("POWERD DOWN")       != -1 ||
+         s.indexOf("POWER DOWN")        != -1;
+}
+
 void simPowerOff()
 {
   // ── 사전 처리: 활성 네트워크 세션 종료 ─────────────────────────────────
-  // NETOPEN 상태에서 AT+CPOF 가 일부 펌웨어에서 거부됨.
-  // captureAndSave() 이후 TCP/HTTP 세션이 열려 있을 수 있으므로 먼저 닫음.
+  // NETOPEN 상태에서 AT+CPOF 가 일부 펌웨어에서 거부될 수 있음
   Serial.println("[SIM] Power OFF: closing network session...");
   simSendAT("AT+NETCLOSE", 5000);
   simFlush(300);
 
   // ── 1단계: AT+CPOF (소프트웨어 종료) ────────────────────────────────────
-  // simSendAT() 는 "OK" 수신 즉시 리턴하므로, "NORMAL POWER DOWN" URC 는
-  // simWaitFor() 로 별도 수신 대기 필요 (비동기 도착)
+  // simSendAT() 는 "OK" 수신 즉시 리턴 → Power-Down URC 는 비동기 도착
+  // simWaitFor() 로 별도 수신 대기 필요
   Serial.println("[SIM] AT+CPOF...");
   String resp = simSendAT("AT+CPOF", 3000);
   Serial.println("[SIM] AT+CPOF resp: [" + resp + "]");
 
-  String urc = simWaitFor("NORMAL POWER DOWN", 5000);
-  if (resp.indexOf("NORMAL POWER DOWN") != -1 ||
-      urc.indexOf("NORMAL POWER DOWN")  != -1)
+  String urc = simWaitFor("DOWN", 5000);   // "POWERD DOWN" / "NORMAL POWER DOWN" 공통 토큰
+  Serial.println("[SIM] Power-Down URC: [" + urc + "]");
+  if (isPowerDownUrc(resp) || isPowerDownUrc(urc))
   {
-    Serial.println("[SIM] NORMAL POWER DOWN — modem OFF");
+    Serial.println("[SIM] Power DOWN confirmed — modem OFF");
     delay(500);
     return;
   }
-  Serial.println("[SIM] AT+CPOF: NORMAL POWER DOWN not received");
+  Serial.println("[SIM] AT+CPOF: Power-Down URC not received");
 
-  // ── 2단계: AT+CPOWD=1 (일부 펌웨어 대체 커맨드) ─────────────────────────
+  // ── 2단계: AT+CPOWD=1 (대체 소프트웨어 종료 커맨드) ─────────────────────
   Serial.println("[SIM] AT+CPOWD=1...");
   resp = simSendAT("AT+CPOWD=1", 3000);
   Serial.println("[SIM] AT+CPOWD=1 resp: [" + resp + "]");
 
-  urc = simWaitFor("NORMAL POWER DOWN", 5000);
-  if (resp.indexOf("NORMAL POWER DOWN") != -1 ||
-      urc.indexOf("NORMAL POWER DOWN")  != -1)
+  urc = simWaitFor("DOWN", 5000);
+  Serial.println("[SIM] Power-Down URC: [" + urc + "]");
+  if (isPowerDownUrc(resp) || isPowerDownUrc(urc))
   {
-    Serial.println("[SIM] NORMAL POWER DOWN (CPOWD) — modem OFF");
+    Serial.println("[SIM] Power DOWN confirmed (CPOWD) — modem OFF");
     delay(500);
     return;
   }
-  Serial.println("[SIM] AT+CPOWD=1: NORMAL POWER DOWN not received");
+  Serial.println("[SIM] AT+CPOWD=1: Power-Down URC not received");
 
   // ── 3단계: PWRKEY 하드웨어 강제 종료 ────────────────────────────────────
   Serial.printf("[SIM] PWRKEY hardware OFF (GPIO%d LOW %d ms)\n",
@@ -83,15 +93,15 @@ void simPowerOff()
   digitalWrite(SIM_PWRKEY_PIN, LOW);
   delay(SIM_PWROFF_PULSE_MS);
   digitalWrite(SIM_PWRKEY_PIN, HIGH);
-  Serial.println("[SIM] PWRKEY pulse done — waiting for shutdown...");
+  Serial.println("[SIM] PWRKEY pulse done");
 
-  urc = simWaitFor("NORMAL POWER DOWN", 4000);
-  if (urc.indexOf("NORMAL POWER DOWN") != -1)
-    Serial.println("[SIM] NORMAL POWER DOWN (PWRKEY) — modem OFF");
+  urc = simWaitFor("DOWN", 4000);
+  if (isPowerDownUrc(urc))
+    Serial.println("[SIM] Power DOWN confirmed (PWRKEY) — modem OFF");
   else
-    Serial.println("[SIM] No URC after PWRKEY — assumed OFF");
+    Serial.println("[SIM] No Power-Down URC after PWRKEY — assumed OFF");
 
-  delay(1000);   // 셧다운 완료 대기
+  delay(1000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
