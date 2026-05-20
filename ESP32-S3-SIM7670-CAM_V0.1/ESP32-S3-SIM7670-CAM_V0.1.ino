@@ -25,6 +25,14 @@ void setup()
   Serial.setDebugOutput(true);
   Serial.println();
 
+  // ── 타임존 설정 (최우선, 부팅/Deep Sleep 복귀 공통) ─────────────────────
+  // setenv() 는 프로세스 RAM 에 저장되므로 Deep Sleep(완전 재부팅) 후 초기화됨.
+  // applyKSTTime() / correctRtcFromModem() 내부에만 두면 HTTP 실패 시 누락되어
+  // localtime_r() 가 UTC 를 반환하는 문제 발생.
+  // setup() 최상단에서 무조건 설정하여 항상 KST(UTC+9) 보장.
+  setenv("TZ", "KST-9", 1);
+  tzset();
+
   ledInit();
   ledSet(0, 0, 50);   // blue: 초기화 중
 
