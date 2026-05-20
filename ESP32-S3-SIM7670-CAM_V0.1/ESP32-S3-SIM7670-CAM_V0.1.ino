@@ -10,26 +10,39 @@
 #include "setup_server.h"
 #include <WiFi.h>
 #include <time.h>
-#include "esp_sleep.h"   // Light Sleep API
+#include "esp_sleep.h"   // Deep Sleep / Wake-up API
 
 void setup()
 {
+  // ── Deep Sleep 복귀 여부 판별 (Serial.begin 전에 확인) ──────────────────
+  // Deep Sleep 은 완전 재부팅이므로 setup() 이 항상 실행됨.
+  // wakeReason == TIMER → 스케줄된 캡처를 위한 Deep Sleep 복귀.
+  // wakeReason == UNDEFINED (0) → 최초 부팅 (전원 인가 / 리셋 버튼).
+  esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
+  bool isDeepSleepWake = (wakeReason == ESP_SLEEP_WAKEUP_TIMER);
+
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
 
-  // LED: blue = booting
   ledInit();
-  ledSet(0, 0, 50);
+  ledSet(0, 0, 50);   // blue: 초기화 중
 
-  // ── Camera init ──
+  if (isDeepSleepWake)
+    Serial.println("\n[SYS] ===== Deep Sleep Wake (Timer) =====");
+  else
+    Serial.printf("\n[SYS] ===== Cold Boot (cause=%d) =====\n", (int)wakeReason);
+
+  // ── 공통 초기화 (최초 부팅 / Deep Sleep 복귀 공통) ───────────────────────
+
+  // Camera init
   if (!cameraInit())
   {
     Serial.println("[CAM] Init failed, halting");
     return;
   }
 
-  // ── Battery gauge init (Wire는 cameraInit() 내부에서 이미 초기화됨) ──
+  // Battery gauge init (Wire는 cameraInit() 내부에서 이미 초기화됨)
   if (!batteryInit())
     Serial.println("[BAT] MAX17048 not found — battery level fixed at 100%");
 
@@ -37,7 +50,7 @@ void setup()
   setupLedFlash();
 #endif
 
-  // ── SD init ──
+  // SD init
   if (sdSetup())
   {
     sdReady = true;
@@ -49,26 +62,37 @@ void setup()
     ledBlink(255, 0, 0, 5, 300);    // red x5: SD fail
   }
 
-  // ── SIM7670G power on + init ──
+  // SIM7670G power on + init
   ledSet(0, 0, 50);
   simPowerInit();
   simPowerOn();
   simReady = simInit();
   if (simReady)
   {
-    ledBlink(0, 0, 255, 3, 200);    // blue x3: modem OK
+    ledBlink(0, 0, 255, isDeepSleepWake ? 2 : 3, 200);   // blue x2(wake) / x3(boot)
     Serial.println("[SIM] Ready");
     saveConfig();                    // refresh m2_point_id / m2_device_id in config.txt
   }
   else
   {
     ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
-    Serial.println("[SIM] Init failed — WiFi-only mode");
+    Serial.println("[SIM] Init failed");
   }
 
-  // ── Setup mode (WiFi AP + 설정 페이지) ──
-  // 5분 타임아웃 또는 "운영 시작" 버튼 → 운영 모드로 전환
-  enterSetupMode();
+  // ── 분기: 최초 부팅 vs Deep Sleep 복귀 ─────────────────────────────────
+  if (!isDeepSleepWake)
+  {
+    // 최초 부팅: Setup mode (WiFi AP + 설정 페이지)
+    // 5분 타임아웃 또는 "운영 시작" 버튼 → 운영 모드로 전환
+    enterSetupMode();
+  }
+  else
+  {
+    // Deep Sleep 복귀: Setup mode 스킵, 즉시 운영 모드
+    // ntpSynced / nextCaptureTime 은 RTC 메모리에서 복원됨
+    Serial.println("[SYS] Deep Sleep wake — skipping setup mode");
+    ledSet(0, 40, 0);   // green: 운영 준비 완료
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -405,27 +429,26 @@ void loop()
     }
   }
 
-  // ── Light Sleep: 다음 캡처 시각까지 대기 ────────────────────────────────
-  // esp_light_sleep_start() 는 여기서 반환됨 (재부팅 없음).
-  // RTC 타이머가 계속 동작하므로 Wake-up 후 time() 정확도 유지.
+  // ── Deep Sleep: 다음 캡처 시각까지 대기 ────────────────────────────────
+  // esp_deep_sleep_start() 는 반환되지 않음 → Wake-up 후 setup() 부터 재시작.
+  // ntpSynced / nextCaptureTime 은 RTC_DATA_ATTR 로 선언되어 Deep Sleep 에서도 보존.
   if (ntpSynced && nextCaptureTime > 0)
   {
     time_t now;
     time(&now);
-    // 2초 여유: Wake-up → SIM 재초기화(~15초) 는 sleepSec 외 별도 진행
+    // 2초 여유: Wake-up → setup() 내 SIM 재초기화(~25초) 는 sleepSec 외 별도 진행
     int64_t sleepSec = (int64_t)(nextCaptureTime - now) - 2LL;
 
     if (sleepSec > 5)
     {
       struct tm nextTm;
       localtime_r(&nextCaptureTime, &nextTm);
-      Serial.printf("[SYS] Light Sleep %lld s  (next capture: %02d:%02d:00 KST)\n",
+      Serial.printf("[SYS] Deep Sleep %lld s  (next capture: %02d:%02d:00 KST)\n",
                     sleepSec, nextTm.tm_hour, nextTm.tm_min);
 
-      // ── Sleep 전 주변장치 절전 처리 ─────────────────────────────────
+      // ── Sleep 전 주변장치 정리 ───────────────────────────────────────
 
-      // [B] SIM7670G 완전 전원 차단 (LTE DRX 사이클 완전 제거, ~60mA → 0mA)
-      // Wake-up 후 simPowerOn()+simInit() 로 재초기화 (~15초 소요)
+      // [B] SIM7670G 완전 전원 차단
       if (simReady)
       {
         simPowerOff();
@@ -433,8 +456,8 @@ void loop()
         Serial.println("[SYS] SIM7670 powered OFF");
       }
 
-      // [C] OV5640 소프트웨어 대기 모드 (레지스터 0x3008 bit6, ~12mA → ~1mA)
-      // PWDN 핀 미연결(WAVESHARE 보드) 대신 SCCB 레지스터로 제어
+      // [C] OV5640 소프트웨어 대기 모드 (Deep Sleep 중 XCLK 정지로도 저전력이지만 명시적 처리)
+      // Wake-up 후 setup() 의 cameraInit() 에서 전체 재초기화되므로 복귀 처리 불필요.
       sensor_t *camSensor = esp_camera_sensor_get();
       if (camSensor)
       {
@@ -442,78 +465,19 @@ void loop()
         Serial.println("[SYS] OV5640 software standby");
       }
 
-      // [D] SD 카드 MMC 버스 해제 (CMD/CLK/DATA 풀업 전류 제거, ~0.3–0.5mA 절감)
-      // Wake-up 후 sdSetup() 으로 재마운트
+      // [D] SD 카드 언마운트 (파일 시스템 정합성 보장)
       if (sdReady)
       {
         SD_MMC.end();
+        sdReady = false;
         Serial.println("[SYS] SD card unmounted");
       }
 
-      Serial.flush();          // UART TX 버퍼 비우기 (sleep 전 로그 보장)
-      ledSet(0, 0, 0);         // Sleep 중 상태 LED OFF (절전)
+      Serial.flush();   // UART TX 버퍼 비우기 (sleep 전 로그 보장)
+      ledSet(0, 0, 0);  // Sleep 중 상태 LED OFF
 
-      // Wake-up 소스 설정 (매 Sleep 진입 전 재설정 필요)
       esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
-      esp_sleep_enable_uart_wakeup(0);   // UART0(Serial) 수신 시 즉시 Wake-up
-
-      esp_light_sleep_start();   // ← CPU 여기서 정지 / Wake-up 후 다음 줄부터 재개
-
-      // ── Wake-up 복귀 ─────────────────────────────────────────────────
-
-      ledSet(0, 0, 50);  // blue: SIM 재초기화 중
-
-      esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
-      switch (wakeCause)
-      {
-        case ESP_SLEEP_WAKEUP_TIMER:
-          Serial.println("[SYS] Wake: Timer (capture due)");
-          break;
-        case ESP_SLEEP_WAKEUP_UART:
-          Serial.println("[SYS] Wake: UART (Serial input)");
-          delay(50);   // UART 수신 버퍼 안정화 (첫 바이트 손실 보정)
-          break;
-        default:
-          Serial.printf("[SYS] Wake: cause=%d\n", (int)wakeCause);
-          break;
-      }
-
-      // [B] SIM7670G 전원 복구 + 재초기화 (~15초)
-      // ntpSynced=true 이므로 simConnect() 내부에서 CNTP 재동기화는 생략됨
-      // LTE 재등록 → simPostDeviceStatus → simGetDeviceSetting 순으로 수행
-      Serial.println("[SYS] SIM7670 powering ON...");
-      simPowerOn();
-      simReady = simInit();
-      if (simReady)
-      {
-        ledBlink(0, 0, 255, 2, 150);
-        Serial.println("[SYS] SIM7670 ready");
-      }
-      else
-      {
-        ledBlink(255, 80, 0, 3, 200);
-        Serial.println("[SYS] SIM7670 reinit failed — image will be retried next cycle");
-      }
-
-      // [C] OV5640 소프트웨어 대기 해제
-      // bit6=0 으로 복귀 후 captureAndSave() 의 프레임 폐기가 안정화 커버
-      if (camSensor)
-      {
-        camSensor->set_reg(camSensor, 0x3008, 0x40, 0x00);  // bit6=0: 정상 동작
-        Serial.println("[SYS] OV5640 awake");
-      }
-
-      // [D] SD 카드 재마운트
-      if (!sdReady || !SD_MMC.cardSize())   // cardSize()==0 이면 이미 해제됨
-      {
-        sdReady = sdSetup();
-        if (sdReady)
-          Serial.println("[SYS] SD card remounted");
-        else
-          Serial.println("[SYS] SD card remount failed — image may be lost");
-      }
-
-      ledSet(0, 40, 0);  // green: 활성 상태 복구
+      esp_deep_sleep_start();   // ← 전원 차단, 이후 setup() 부터 재시작 (반환 안 됨)
     }
     else
     {
@@ -522,6 +486,6 @@ void loop()
   }
   else
   {
-    delay(500);    // 시간 미동기화 상태: 기존 폴링 유지
+    delay(500);    // 시간 미동기화 상태: 캡처 없이 폴링 유지
   }
 }

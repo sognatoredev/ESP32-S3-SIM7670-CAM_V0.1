@@ -10,9 +10,13 @@
 #include "SD_MMC.h"
 #include <Arduino.h>
 
-static uint32_t captureCount    = 0;   // fallback counter when NTP not synced
-int             g_captureTarget = 1;   // set cnt <n> — send after every n captures
-static int      s_captureAccum  = 0;   // captures accumulated since last TX
+// RTC_DATA_ATTR: Deep Sleep 복귀 시에도 값 보존.
+// captureCount  — 파일명 fallback 카운터 (NTP 미동기 시 사용)
+// g_captureTarget — 전송 전 누적 캡처 수 설정값 (set cnt <n> 으로 변경 가능)
+// s_captureAccum  — 마지막 TX 이후 누적 캡처 수 (g_captureTarget > 1 시 의미 있음)
+RTC_DATA_ATTR static uint32_t captureCount    = 0;
+RTC_DATA_ATTR        int      g_captureTarget = 1;
+RTC_DATA_ATTR static int      s_captureAccum  = 0;
 int             g_lastCaptureWidth  = 0;   // resolution of most recent capture
 int             g_lastCaptureHeight = 0;
 

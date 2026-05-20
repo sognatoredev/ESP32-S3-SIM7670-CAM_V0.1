@@ -6,8 +6,9 @@
 
 HardwareSerial SimSerial(1);   // UART1 (GPIO17/18)
 bool simReady    = false;
-int  g_m2PointId  = 0;
-int  g_m2DeviceId = 0;
+// RTC_DATA_ATTR: Deep Sleep 복귀 시에도 서버 설정값 보존 (서버 조회 실패 시 fallback)
+RTC_DATA_ATTR int  g_m2PointId  = 0;
+RTC_DATA_ATTR int  g_m2DeviceId = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Power control  (GPIO21 = PWRKEY, active-low pulse)
@@ -560,20 +561,16 @@ void simConnect()
                 statusOk  ? "OK" : "FAIL",
                 settingOk ? "OK" : "FAIL");
 
-  // 5. RTC 드리프트 보정: Light Sleep 중 ESP32-S3 내부 RC 발진기(150kHz, ±5%)를
-  //    사용하므로 10분 슬립 시 최대 ±30초 오차가 누적될 수 있음.
-  //    HTTP 통신 성공 = 모뎀이 LTE에 등록됨 = 모뎀 RTC가 네트워크 시간으로 동기화됨.
-  //    이 시점에 AT+CCLK? 를 재독하여 ESP32 시스템 시계를 보정.
-  //    applyKSTTime() 은 settimeofday() + calcNextBoundary() 도 수행하므로
-  //    다음 캡처 스케줄도 정확한 시각 기준으로 재계산됨.
+  // 5. RTC 드리프트 보정: Deep/Light Sleep 중 내부 RC 발진기(150kHz, ±5%) 사용으로
+  //    10분 슬립 시 최대 ±30초 오차 누적 가능.
+  //    HTTP 통신 성공 = 모뎀 LTE 등록됨 = 모뎀 RTC 가 네트워크 시간으로 확정됨.
+  //    correctRtcFromModem() 은 settimeofday() 만 수행하고 nextCaptureTime 은 변경 안 함.
+  //    applyKSTTime() 을 쓰면 nextCaptureTime 이 재계산되어 캡처 스케줄이 한 주기 밀림.
   if (statusOk || settingOk)
   {
     String freshKst = simGetModemTime();   // AT+CCLK? 재독 (HTTP 이후 → LTE 시간 확정)
     if (!freshKst.isEmpty())
-    {
-      Serial.println("[TIME] Re-syncing RTC from LTE network time (drift correction)");
-      applyKSTTime(freshKst.c_str());      // settimeofday() + nextCaptureTime 재계산
-    }
+      correctRtcFromModem(freshKst.c_str());   // settimeofday() 만 수행, nextCaptureTime 불변
   }
 }
 
