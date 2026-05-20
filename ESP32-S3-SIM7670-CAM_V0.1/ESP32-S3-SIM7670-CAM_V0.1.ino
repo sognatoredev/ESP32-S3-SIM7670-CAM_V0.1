@@ -436,6 +436,14 @@ void loop()
         Serial.println("[SYS] OV5640 software standby");
       }
 
+      // [D] SD 카드 MMC 버스 해제 (CMD/CLK/DATA 풀업 전류 제거, ~0.3–0.5mA 절감)
+      // Wake-up 후 sdSetup() 으로 재마운트
+      if (sdReady)
+      {
+        SD_MMC.end();
+        Serial.println("[SYS] SD card unmounted");
+      }
+
       Serial.flush();          // UART TX 버퍼 비우기 (sleep 전 로그 보장)
       ledSet(0, 0, 0);         // Sleep 중 상태 LED OFF (절전)
 
@@ -487,6 +495,16 @@ void loop()
       {
         camSensor->set_reg(camSensor, 0x3008, 0x40, 0x00);  // bit6=0: 정상 동작
         Serial.println("[SYS] OV5640 awake");
+      }
+
+      // [D] SD 카드 재마운트
+      if (!sdReady || !SD_MMC.cardSize())   // cardSize()==0 이면 이미 해제됨
+      {
+        sdReady = sdSetup();
+        if (sdReady)
+          Serial.println("[SYS] SD card remounted");
+        else
+          Serial.println("[SYS] SD card remount failed — image may be lost");
       }
 
       ledSet(0, 40, 0);  // green: 활성 상태 복구
