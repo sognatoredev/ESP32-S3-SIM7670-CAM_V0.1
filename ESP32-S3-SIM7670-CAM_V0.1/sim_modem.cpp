@@ -38,11 +38,60 @@ void simPowerOn()
 
 void simPowerOff()
 {
-  Serial.println("[SIM] Power OFF: PWRKEY LOW " + String(SIM_PWROFF_PULSE_MS) + " ms");
+  // ── 1단계: AT+CPOF 소프트웨어 종료 (권장 방식) ──────────────────────────
+  // PWRKEY 토글 방식은 모뎀 상태(통신 중 등)에 따라 무시될 수 있음.
+  // AT+CPOF 는 LTE 세션을 정리하고 "NORMAL POWER DOWN" URC 후 실제 종료.
+  Serial.println("[SIM] Power OFF: sending AT+CPOF...");
+  SimSerial.println("AT+CPOF");
+
+  // "NORMAL POWER DOWN" 수신 대기 (최대 5초)
+  uint32_t t0 = millis();
+  String   buf;
+  bool     normalDown = false;
+  while (millis() - t0 < 5000UL)
+  {
+    while (SimSerial.available())
+      buf += (char)SimSerial.read();
+    if (buf.indexOf("NORMAL POWER DOWN") != -1)
+    {
+      normalDown = true;
+      break;
+    }
+    delay(100);
+  }
+
+  if (normalDown)
+  {
+    Serial.println("[SIM] NORMAL POWER DOWN received — modem OFF");
+    delay(500);   // 모뎀 내부 셧다운 완료 대기
+    return;
+  }
+
+  // ── 2단계: AT+CPOF 실패 시 PWRKEY 하드웨어 펄스로 강제 종료 ─────────────
+  Serial.println("[SIM] AT+CPOF no response — forcing OFF via PWRKEY");
   digitalWrite(SIM_PWRKEY_PIN, LOW);
-  delay(SIM_PWROFF_PULSE_MS);
+  delay(SIM_PWROFF_PULSE_MS);   // >2500ms LOW
   digitalWrite(SIM_PWRKEY_PIN, HIGH);
-  Serial.println("[SIM] Modem power off");
+
+  // PWRKEY 후 "NORMAL POWER DOWN" 재대기 (최대 3초)
+  buf      = "";
+  t0       = millis();
+  while (millis() - t0 < 3000UL)
+  {
+    while (SimSerial.available())
+      buf += (char)SimSerial.read();
+    if (buf.indexOf("NORMAL POWER DOWN") != -1)
+    {
+      Serial.println("[SIM] NORMAL POWER DOWN received (PWRKEY) — modem OFF");
+      delay(500);
+      return;
+    }
+    delay(100);
+  }
+
+  // 응답 없어도 펄스 인가 완료 — 꺼진 것으로 간주
+  Serial.println("[SIM] Power OFF complete (PWRKEY, no URC)");
+  delay(500);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
