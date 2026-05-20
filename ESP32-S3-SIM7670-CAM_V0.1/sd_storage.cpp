@@ -10,7 +10,7 @@
 #define CONFIG_PATH "/config.txt"
 
 // Forward declaration — saveConfig is defined after loadConfig in this file.
-void saveConfig();
+bool saveConfig();
 
 bool sdReady = false;
 
@@ -156,23 +156,21 @@ void loadConfig()
                 loaded, g_captureIntervalMin, g_captureTarget);
 }
 
-void saveConfig()
+// ─────────────────────────────────────────────────────────────────────────────
+// writeConfigContent()
+//   열린 File 에 config 내용을 기록하고, settings 섹션(intv=, cnt=) 에
+//   실제로 쓰여진 바이트 수를 반환.
+//   반환값 > 0  → settings 섹션 정상 기록
+//   반환값 == 0 → FatFS 버퍼 flush 단계에서 DMA 오류 발생 (0x107 Timeout 등)
+//
+// ※ f.printf()/println() 은 FatFS 내부 버퍼에 쓰고 바이트 수를 반환함.
+//    실제 디스크 쓰기(DMA 전송)는 f.close() 의 flush 단계에서 수행되므로
+//    f.printf() 반환값만으로는 디스크 오류를 감지할 수 없음.
+//    따라서 close() 후 파일 크기를 재확인하여 성공 여부를 판별함.
+// ─────────────────────────────────────────────────────────────────────────────
+static size_t writeConfigContent(File &f)
 {
-  if (!sdReady)
-  {
-    Serial.println("[CFG] SD not ready — cannot save");
-    return;
-  }
-
-  File f = SD_MMC.open(CONFIG_PATH, FILE_WRITE);
-  if (!f)
-  {
-    Serial.println("[CFG] Cannot open config.txt for write");
-    return;
-  }
-
-  // ── Info section ─────────────────────────────────────────────────────────
-  // Lines without '=' are skipped by loadConfig(), so no special marker needed.
+  // ── Info section (loadConfig()에서 '='없는 줄은 무시됨) ─────────────────
   f.println("**************************************************");
   f.println(" Device Info  (auto-generated — do not edit)");
   f.println("**************************************************");
@@ -199,10 +197,77 @@ void saveConfig()
   f.println(" [Settings] edit values below to change behavior");
 
   // ── Settings section (machine-readable) ──────────────────────────────────
-  f.printf("intv=%d\n", g_captureIntervalMin);
-  f.printf("cnt=%d\n",  g_captureTarget);
-  f.close();
+  // 이 줄들의 실제 쓰기 성공 여부를 반환값으로 전달.
+  size_t sw = 0;
+  sw += f.printf("intv=%d\n", g_captureIntervalMin);
+  sw += f.printf("cnt=%d\n",  g_captureTarget);
+  return sw;
+}
 
-  Serial.printf("[CFG] Saved — intv=%d min  cnt=%d\n",
-                g_captureIntervalMin, g_captureTarget);
+// ─────────────────────────────────────────────────────────────────────────────
+// saveConfig()
+//   /config.txt 에 설정을 기록하고 성공 여부를 반환.
+//
+//   SD DMA Timeout(0x107) 발생 시 SD 재마운트 후 1회 재시도.
+//   재시도도 실패하면 false 반환 — 호출자는 사용자에게 오류를 알려야 함.
+//
+//   검증 방법: f.close() 후 파일을 다시 열어 크기를 확인.
+//   FatFS 가 flush 단계에서 DMA 오류를 흡수해도 파일 크기로 감지 가능.
+// ─────────────────────────────────────────────────────────────────────────────
+bool saveConfig()
+{
+  if (!sdReady)
+  {
+    Serial.println("[CFG] SD not ready — cannot save");
+    return false;
+  }
+
+  for (int attempt = 1; attempt <= 2; attempt++)
+  {
+    if (attempt > 1)
+    {
+      // SD 재마운트: DMA 오류 후 SDMMC 컨트롤러 + SD 카드 상태 리셋
+      Serial.println("[CFG] Re-mounting SD for retry...");
+      SD_MMC.end();
+      delay(500);
+      sdReady = sdSetup();
+      if (!sdReady)
+      {
+        Serial.println("[CFG] SD re-mount failed — save aborted");
+        return false;
+      }
+    }
+
+    File f = SD_MMC.open(CONFIG_PATH, FILE_WRITE);
+    if (!f)
+    {
+      Serial.printf("[CFG] Cannot open config.txt for write (attempt %d)\n", attempt);
+      continue;   // 재마운트 후 재시도
+    }
+
+    size_t sw = writeConfigContent(f);
+    f.close();   // FatFS flush → 실제 DMA 전송 발생 (실패 시 driver 레벨 에러 로그)
+
+    // ── 쓰기 검증: 파일을 다시 열어 크기 확인 ─────────────────────────────
+    // f.close() 의 flush 단계에서 DMA 타임아웃이 발생하면
+    // 파일이 존재하지 않거나 크기가 0/매우 작음.
+    // 최소 기대 크기: info 섹션 ~400 B + settings ~15 B = 200 B (보수적)
+    File v      = SD_MMC.open(CONFIG_PATH, FILE_READ);
+    size_t vsz  = v ? v.size() : 0;
+    if (v) v.close();
+
+    if (sw > 0 && vsz >= 200)
+    {
+      Serial.printf("[CFG] Saved — intv=%d min  cnt=%d  (%u bytes)\n",
+                    g_captureIntervalMin, g_captureTarget, (unsigned)vsz);
+      return true;
+    }
+
+    Serial.printf("[CFG] Write verify failed (attempt %d) — "
+                  "settings=%u B  file=%u B\n",
+                  attempt, (unsigned)sw, (unsigned)vsz);
+  }
+
+  Serial.println("[CFG] Save failed after 2 attempts");
+  return false;
 }

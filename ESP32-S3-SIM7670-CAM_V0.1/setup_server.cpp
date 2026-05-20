@@ -247,14 +247,23 @@ static esp_err_t set_handler(httpd_req_t *req)
   if (new_intv >= 1 && new_intv <= 1440) g_captureIntervalMin = new_intv;
   if (new_cnt  >= 1 && new_cnt  <= 100)  g_captureTarget      = new_cnt;
 
-  saveConfig();
+  bool saved = saveConfig();
 
-  Serial.printf("[SETUP] Applied — intv=%d min  cnt=%d\n",
-                g_captureIntervalMin, g_captureTarget);
+  Serial.printf("[SETUP] Applied — intv=%d min  cnt=%d  (saved=%s)\n",
+                g_captureIntervalMin, g_captureTarget, saved ? "OK" : "FAIL");
 
-  char resp[48];
-  int rlen = snprintf(resp, sizeof(resp),
-                      "intv=%d min, cnt=%d", g_captureIntervalMin, g_captureTarget);
+  char resp[64];
+  int  rlen;
+  if (saved)
+  {
+    rlen = snprintf(resp, sizeof(resp),
+                    "intv=%d min, cnt=%d", g_captureIntervalMin, g_captureTarget);
+  }
+  else
+  {
+    // 설정값은 RAM 에 적용됐지만 SD 기록 실패 → 브라우저에 경고 표시
+    rlen = snprintf(resp, sizeof(resp), "[오류] SD 저장 실패 (설정은 적용됨)");
+  }
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, resp, rlen);
 }
