@@ -1,8 +1,10 @@
 #include "time_sync.h"
 #include "config.h"
-#include "led.h"
 #include <Arduino.h>
 #include <sys/time.h>
+
+// timeSyncInit() (WiFi NTP) 는 제거됨.
+// 시간 동기화는 simSyncTime() → AT+CNTP/AT+CCLK? → applyKSTTime() 로 수행됨.
 
 bool   ntpSynced          = false;
 time_t nextCaptureTime    = 0;
@@ -57,48 +59,6 @@ bool applyKSTTime(const char *kstTimeStr)
   return true;
 }
 
-void timeSyncInit()
-{
-  // If modem already synced the clock, skip WiFi NTP
-  if (ntpSynced)
-  {
-    Serial.println("[NTP] Already synced via modem — skipping WiFi NTP");
-    return;
-  }
-
-  // Set KST timezone first (needed even when NTP is pending)
-  setenv("TZ", "KST-9", 1);
-  tzset();
-
-  configTime(NTP_GMT_OFFSET, NTP_DST_OFFSET, NTP_SERVER);
-  Serial.print("[NTP] Syncing via WiFi");
-
-  struct tm timeinfo;
-  int retries = 0;
-  while (!getLocalTime(&timeinfo) && retries < 20)
-  {
-    delay(500);
-    Serial.print(".");
-    retries++;
-  }
-
-  if (retries < 20)
-  {
-    ntpSynced = true;
-    Serial.printf("\n[NTP] %04d/%02d/%02d %02d:%02d:%02d KST\n",
-                  timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    nextCaptureTime = calcNextBoundary();
-    struct tm nextTm;
-    localtime_r(&nextCaptureTime, &nextTm);
-    Serial.printf("[CAP] Next capture: %02d:%02d:00 KST\n", nextTm.tm_hour, nextTm.tm_min);
-  }
-  else
-  {
-    Serial.println("\n[NTP] Sync failed");
-    ledBlink(255, 80, 0, 5, 200);
-  }
-}
 
 time_t calcNextBoundary()
 {

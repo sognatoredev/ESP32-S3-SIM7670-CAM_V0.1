@@ -10,6 +10,7 @@
 #include "setup_server.h"
 #include <WiFi.h>
 #include <time.h>
+#include "esp_sleep.h"   // Light Sleep API
 
 void setup()
 {
@@ -294,33 +295,40 @@ static void handleSerialCmd(const String &cmd)
   }
 }
 
-// 운영 모드로 첫 진입 시 WiFi 연결 + NTP 동기화
+// 운영 모드로 첫 진입 시 초기화
+// 시간 동기화는 simInit() → simConnect() → simSyncTime() (AT+CNTP/CCLK?) 에서 이미 수행됨.
+// WiFi 는 운영모드에서 완전 비활성화 (LTE 전용).
 static void initOperationMode()
 {
   Serial.println("[SYS] Initializing operation mode...");
   ledSet(50, 50, 0);
 
-  WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("[WiFi] Connecting");
+  // WiFi 완전 비활성화 — 세팅모드 AP가 종료된 상태이지만 명시적으로 OFF
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  Serial.println("[WiFi] OFF — operation mode uses LTE only");
 
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000UL)
+  // 시간 동기화 상태 확인
+  if (ntpSynced)
   {
-    ledSet(50, 50, 0); delay(250);
-    ledSet(0,  0,  0); delay(250);
-    Serial.print(".");
+    struct tm t;
+    getLocalTime(&t);
+    Serial.printf("[SYS] Time synced (LTE): %04d/%02d/%02d %02d:%02d:%02d KST\n",
+                  t.tm_year+1900, t.tm_mon+1, t.tm_mday,
+                  t.tm_hour, t.tm_min, t.tm_sec);
+    struct tm nextTm;
+    localtime_r(&nextCaptureTime, &nextTm);
+    Serial.printf("[CAP] Next capture: %02d:%02d:00 KST\n", nextTm.tm_hour, nextTm.tm_min);
   }
-
-  if (WiFi.status() == WL_CONNECTED)
+  else if (simReady)
   {
-    Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
-    timeSyncInit();
+    // simInit() 중 CNTP 실패한 경우 재시도
+    Serial.println("[SYS] Time not synced — retrying via LTE (AT+CNTP)...");
+    simConnect();
   }
   else
   {
-    Serial.println("\n[WiFi] Connection failed — NTP sync skipped");
-    ledBlink(255, 0, 0, 3, 300);
+    Serial.println("[SYS] Modem not ready — operating without time sync");
   }
 
   ledSet(0, 40, 0);   // green: standby
@@ -390,5 +398,58 @@ void loop()
       captureAndSave();
     }
   }
-  delay(500);
+
+  // ── Light Sleep: 다음 캡처 시각까지 대기 ────────────────────────────────
+  // esp_light_sleep_start() 는 여기서 반환됨 (재부팅 없음).
+  // RTC 타이머가 계속 동작하므로 Wake-up 후 time() 정확도 유지.
+  // 카메라 XCLK(LEDC)·SIM7670·SD 는 sleep 중 유지/독립 동작.
+  if (ntpSynced && nextCaptureTime > 0)
+  {
+    time_t now;
+    time(&now);
+    // 2초 여유: Wake-up → 캡처 준비(카메라 안정화) 시간 확보
+    int64_t sleepSec = (int64_t)(nextCaptureTime - now) - 2LL;
+
+    if (sleepSec > 5)
+    {
+      struct tm nextTm;
+      localtime_r(&nextCaptureTime, &nextTm);
+      Serial.printf("[SYS] Light Sleep %lld s  (next capture: %02d:%02d:00 KST)\n",
+                    sleepSec, nextTm.tm_hour, nextTm.tm_min);
+      Serial.flush();   // UART TX 버퍼 비우기 (sleep 전 로그 보장)
+
+      ledSet(0, 0, 0);  // Sleep 중 상태 LED OFF (절전)
+
+      // Wake-up 소스 설정 (매 Sleep 진입 전 재설정 필요)
+      esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
+      esp_sleep_enable_uart_wakeup(0);   // UART0(Serial) 수신 시 즉시 Wake-up
+
+      esp_light_sleep_start();   // ← CPU 여기서 정지 / Wake-up 후 다음 줄부터 재개
+
+      // ── Wake-up 복귀 ─────────────────────────────────────────────────
+      ledSet(0, 40, 0);  // green: 활성 상태 복구
+
+      switch (esp_sleep_get_wakeup_cause())
+      {
+        case ESP_SLEEP_WAKEUP_TIMER:
+          Serial.println("[SYS] Wake: Timer (capture due)");
+          break;
+        case ESP_SLEEP_WAKEUP_UART:
+          Serial.println("[SYS] Wake: UART (Serial input)");
+          delay(50);   // UART 수신 버퍼 안정화 (첫 바이트 손실 보정)
+          break;
+        default:
+          Serial.printf("[SYS] Wake: cause=%d\n", esp_sleep_get_wakeup_cause());
+          break;
+      }
+    }
+    else
+    {
+      delay(200);  // 잔여 시간이 짧을 때 단순 대기
+    }
+  }
+  else
+  {
+    delay(500);    // 시간 미동기화 상태: 기존 폴링 유지
+  }
 }
