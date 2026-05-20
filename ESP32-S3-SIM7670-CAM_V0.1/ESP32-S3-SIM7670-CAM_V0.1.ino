@@ -402,12 +402,11 @@ void loop()
   // ── Light Sleep: 다음 캡처 시각까지 대기 ────────────────────────────────
   // esp_light_sleep_start() 는 여기서 반환됨 (재부팅 없음).
   // RTC 타이머가 계속 동작하므로 Wake-up 후 time() 정확도 유지.
-  // 카메라 XCLK(LEDC)·SIM7670·SD 는 sleep 중 유지/독립 동작.
   if (ntpSynced && nextCaptureTime > 0)
   {
     time_t now;
     time(&now);
-    // 2초 여유: Wake-up → 캡처 준비(카메라 안정화) 시간 확보
+    // 2초 여유: Wake-up → 주변장치 복귀 + 카메라 안정화 시간 확보
     int64_t sleepSec = (int64_t)(nextCaptureTime - now) - 2LL;
 
     if (sleepSec > 5)
@@ -416,9 +415,28 @@ void loop()
       localtime_r(&nextCaptureTime, &nextTm);
       Serial.printf("[SYS] Light Sleep %lld s  (next capture: %02d:%02d:00 KST)\n",
                     sleepSec, nextTm.tm_hour, nextTm.tm_min);
-      Serial.flush();   // UART TX 버퍼 비우기 (sleep 전 로그 보장)
 
-      ledSet(0, 0, 0);  // Sleep 중 상태 LED OFF (절전)
+      // ── Sleep 전 주변장치 절전 처리 ─────────────────────────────────
+
+      // [A] SIM7670G 슬립 모드 (LTE 라디오 저속 클럭, ~60mA → ~2mA)
+      // UART RX 신호로 즉시 복귀 가능 (재부팅·재등록 불필요)
+      if (simReady)
+      {
+        simSendAT("AT+CSCLK=2", 1000);
+        Serial.println("[SYS] SIM7670 sleep (CSCLK=2)");
+      }
+
+      // [C] OV5640 소프트웨어 대기 모드 (레지스터 0x3008 bit6, ~12mA → ~1mA)
+      // PWDN 핀 미연결(WAVESHARE 보드) 대신 SCCB 레지스터로 제어
+      sensor_t *camSensor = esp_camera_sensor_get();
+      if (camSensor)
+      {
+        camSensor->set_reg(camSensor, 0x3008, 0x40, 0x40);  // bit6=1: 소프트웨어 대기
+        Serial.println("[SYS] OV5640 software standby");
+      }
+
+      Serial.flush();          // UART TX 버퍼 비우기 (sleep 전 로그 보장)
+      ledSet(0, 0, 0);         // Sleep 중 상태 LED OFF (절전)
 
       // Wake-up 소스 설정 (매 Sleep 진입 전 재설정 필요)
       esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
@@ -427,6 +445,26 @@ void loop()
       esp_light_sleep_start();   // ← CPU 여기서 정지 / Wake-up 후 다음 줄부터 재개
 
       // ── Wake-up 복귀 ─────────────────────────────────────────────────
+
+      // [A] SIM7670G 슬립 해제
+      // sleep 전 전송한 \r 이 모뎀을 깨우고, AT+CSCLK=0 으로 정상 복귀
+      if (simReady)
+      {
+        SimSerial.write('\r');           // 모뎀 wake 트리거 (UART RX 활성)
+        delay(300);                      // 모뎀 클럭 안정화 대기
+        simFlush(50);                    // 잔류 바이트 제거
+        simSendAT("AT+CSCLK=0", 2000);  // 슬립 모드 해제
+        Serial.println("[SYS] SIM7670 awake (CSCLK=0)");
+      }
+
+      // [C] OV5640 소프트웨어 대기 해제
+      // bit6=0 으로 복귀 후 captureAndSave() 의 프레임 폐기가 안정화 커버
+      if (camSensor)
+      {
+        camSensor->set_reg(camSensor, 0x3008, 0x40, 0x00);  // bit6=0: 정상 동작
+        Serial.println("[SYS] OV5640 awake");
+      }
+
       ledSet(0, 40, 0);  // green: 활성 상태 복구
 
       switch (esp_sleep_get_wakeup_cause())
