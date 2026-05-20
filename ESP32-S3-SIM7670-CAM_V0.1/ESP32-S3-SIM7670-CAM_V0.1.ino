@@ -389,13 +389,19 @@ void loop()
 
     if (now >= nextCaptureTime)
     {
+      captureAndSave();
+
+      // calcNextBoundary() 를 captureAndSave() 이후에 호출해야 함.
+      // 이전 방식(before)처럼 captureAndSave() 전에 호출하면,
+      // TX 재시도로 captureAndSave() 가 인터벌(예: 10분)을 초과할 경우
+      // nextCaptureTime 이 이미 과거가 되어 다음 루프에서 즉시 재캡처가 발동됨.
+      // capture 완료 후 현재 시각 기준으로 다음 경계를 계산하면
+      // 항상 미래 값이 보장되어 올바른 슬립 시간이 산출됨.
       nextCaptureTime = calcNextBoundary();
 
       struct tm nextTm;
       localtime_r(&nextCaptureTime, &nextTm);
       Serial.printf("[CAP] Next: %02d:%02d:00 KST\n", nextTm.tm_hour, nextTm.tm_min);
-
-      captureAndSave();
     }
   }
 

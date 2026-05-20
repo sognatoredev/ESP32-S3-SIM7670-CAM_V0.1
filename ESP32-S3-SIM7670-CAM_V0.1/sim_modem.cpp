@@ -559,6 +559,22 @@ void simConnect()
                 timeOk    ? "OK" : "FAIL",
                 statusOk  ? "OK" : "FAIL",
                 settingOk ? "OK" : "FAIL");
+
+  // 5. RTC 드리프트 보정: Light Sleep 중 ESP32-S3 내부 RC 발진기(150kHz, ±5%)를
+  //    사용하므로 10분 슬립 시 최대 ±30초 오차가 누적될 수 있음.
+  //    HTTP 통신 성공 = 모뎀이 LTE에 등록됨 = 모뎀 RTC가 네트워크 시간으로 동기화됨.
+  //    이 시점에 AT+CCLK? 를 재독하여 ESP32 시스템 시계를 보정.
+  //    applyKSTTime() 은 settimeofday() + calcNextBoundary() 도 수행하므로
+  //    다음 캡처 스케줄도 정확한 시각 기준으로 재계산됨.
+  if (statusOk || settingOk)
+  {
+    String freshKst = simGetModemTime();   // AT+CCLK? 재독 (HTTP 이후 → LTE 시간 확정)
+    if (!freshKst.isEmpty())
+    {
+      Serial.println("[TIME] Re-syncing RTC from LTE network time (drift correction)");
+      applyKSTTime(freshKst.c_str());      // settimeofday() + nextCaptureTime 재계산
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
