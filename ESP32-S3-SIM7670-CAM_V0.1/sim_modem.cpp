@@ -568,20 +568,42 @@ void simConnect()
 
 bool simNetOpen()
 {
-  String resp = simSendAT("AT+NETOPEN", 12000);
-  if (resp.indexOf("already opened") != -1)
+  // AT+HTTPTERM 잔류 상태 정리: HTTP 세션이 완전히 닫히지 않은 경우 PDP 컨텍스트
+  // 충돌로 AT+NETOPEN 이 +NETOPEN: 1 을 반환할 수 있음.
+  // HTTPTERM 은 이미 닫혀 있어도 ERROR 없이 무시되므로 항상 선행 실행.
+  simSendAT("AT+HTTPTERM", 1000);
+  simFlush(500);   // HTTP PDP 해제를 위한 최소 정착 시간
+
+  for (int attempt = 1; attempt <= 3; attempt++)
   {
-    Serial.println("[TCP] Network already open");
-    return true;
+    String resp = simSendAT("AT+NETOPEN", 12000);
+
+    if (resp.indexOf("already opened") != -1)
+    {
+      // NETOPEN 상태가 이미 열려 있으면 닫고 재시도
+      Serial.printf("[TCP] NETOPEN: already open (attempt %d) — closing first\n", attempt);
+      simSendAT("AT+NETCLOSE", 8000);
+      simFlush(2000);
+      continue;
+    }
+    if (resp.indexOf("+NETOPEN: 0") != -1) return true;
+    // 일부 펌웨어는 OK 먼저 응답 후 +NETOPEN URC 비동기 수신
+    if (resp.indexOf("OK") != -1)
+    {
+      String urc = simWaitFor("+NETOPEN:", 8000);
+      if (urc.indexOf("+NETOPEN: 0") != -1) return true;
+    }
+
+    Serial.printf("[TCP] NETOPEN failed (attempt %d/3): %s\n", attempt, resp.c_str());
+    if (attempt < 3)
+    {
+      // PDP 컨텍스트 충돌 해소를 위해 NETCLOSE 후 2초 대기 후 재시도
+      simSendAT("AT+NETCLOSE", 5000);
+      simFlush(2000);
+    }
   }
-  if (resp.indexOf("+NETOPEN: 0") != -1) return true;
-  // Some firmware versions send OK first, then the +NETOPEN URC separately
-  if (resp.indexOf("OK") != -1)
-  {
-    String urc = simWaitFor("+NETOPEN:", 8000);
-    if (urc.indexOf("+NETOPEN: 0") != -1) return true;
-  }
-  Serial.println("[TCP] NETOPEN failed: " + resp);
+
+  Serial.println("[TCP] NETOPEN failed after 3 attempts");
   return false;
 }
 

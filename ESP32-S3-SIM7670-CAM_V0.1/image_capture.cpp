@@ -69,7 +69,8 @@ void captureAndSave()
   ledSet(255, 255, 255);
   flashLedSet(255, 255, 255);
   // delay(200);
-  delay(150); // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
+  // delay(150); // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
+  delay(200); // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
   camera_fb_t *fb = esp_camera_fb_get();
   flashLedSet(0, 0, 0);   // 플래시 먼저 끄기
   ledSet(0, 40, 0);        // 상태 LED 복구
@@ -180,6 +181,12 @@ void captureAndSave()
       // 이미지 전송 전 디바이스 상태 POST (모뎀 신호·배터리·시간 포함)
       SimInfo info = simGetInfo();
       simPostDeviceStatus(info);
+
+      // AT+HTTPTERM 이후 내부 PDP(IP bearer) 컨텍스트가 비동기 해제됨.
+      // 해제 완료 전에 AT+NETOPEN 을 호출하면 +NETOPEN: 1 (컨텍스트 충돌) 이 발생해
+      // 첫 번째 전송이 거의 항상 실패함. 1.5초 대기로 HTTP → TCP 전환 안정화.
+      delay(1500);
+      Serial.println("[TX] HTTP→TCP settling delay done");
 
       if (g_captureTarget == 1)
       {
