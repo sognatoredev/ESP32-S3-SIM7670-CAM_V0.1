@@ -15,7 +15,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // 전역 상태
 // ─────────────────────────────────────────────────────────────────────────────
-bool     g_setupMode    = true;
+// g_setupMode: false 로 초기화.
+// Deep Sleep 은 완전 재부팅이므로 .data 세그먼트가 Flash 초기값으로 복원됨.
+// true 로 초기화하면 Deep Sleep Wake-up 후 loop() 에서 setupServerLoop() 로 빠져
+// 최대 5분간 캡처가 발생하지 않는 문제 발생.
+// enterSetupMode() 호출 시에만 true 로 설정하고, 최초 부팅 여부는
+// setup() 의 esp_sleep_get_wakeup_cause() 로 판별함.
+bool     g_setupMode    = false;
 uint32_t g_setupStartMs = 0;
 
 static httpd_handle_t  s_httpd          = NULL;
