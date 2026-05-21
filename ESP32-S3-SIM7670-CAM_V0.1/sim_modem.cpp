@@ -21,20 +21,48 @@ void simPowerInit()
   Serial.println("[SIM] PWRKEY GPIO init OK");
 }
 
-void simPowerOn()
+// simPowerKeyPulse() — PWRKEY 펄스만 발생시키고 즉시 반환.
+// 모뎀 부팅 대기(SIM_BOOT_WAIT_MS)는 하지 않는다.
+// Deep Sleep 복귀 경로에서 모뎀 부팅과 카메라 캡처를 병렬 진행할 때 사용.
+// 반드시 simPowerInit() 이후에 호출해야 한다.
+void simPowerKeyPulse()
 {
-  Serial.println("[SIM] Power ON: PWRKEY LOW " + String(SIM_PWRON_PULSE_MS) + " ms");
+  Serial.println("[SIM] PWRKEY pulse: LOW " + String(SIM_PWRON_PULSE_MS) + " ms — modem booting...");
   digitalWrite(SIM_PWRKEY_PIN, LOW);
   delay(SIM_PWRON_PULSE_MS);
   digitalWrite(SIM_PWRKEY_PIN, HIGH);
+}
 
-  Serial.print("[SIM] Waiting for modem boot");
-  for (int i = 0; i < SIM_BOOT_WAIT_MS / 500; i++)
+// simWaitBoot() — simPowerKeyPulse() 이후 모뎀 UART 안정화 대기(SIM_BOOT_WAIT_MS).
+// 경과 시간(elapsedMs)을 빼고 남은 시간만 대기하여 이미 흐른 시간을 보상한다.
+// elapsedMs: simPowerKeyPulse() 호출 직후부터 현재까지 경과한 밀리초.
+void simWaitBoot(uint32_t elapsedMs)
+{
+  uint32_t remaining = (elapsedMs < SIM_BOOT_WAIT_MS)
+                       ? (SIM_BOOT_WAIT_MS - elapsedMs) : 0;
+  if (remaining == 0)
   {
-    delay(500);
+    Serial.println("[SIM] Boot wait already covered by parallel work — skipping");
+    return;
+  }
+  Serial.printf("[SIM] Waiting for modem boot (%lu ms remaining)", (unsigned long)remaining);
+  uint32_t step = 500;
+  while (remaining > 0)
+  {
+    uint32_t w = (remaining > step) ? step : remaining;
+    delay(w);
     Serial.print(".");
+    remaining -= w;
   }
   Serial.println(" done");
+}
+
+// simPowerOn() — 기존 직렬 방식 (PWRKEY 펄스 + 전체 부팅 대기).
+// 최초 부팅 경로 및 "sim on" 직렬 커맨드에서 사용.
+void simPowerOn()
+{
+  simPowerKeyPulse();
+  simWaitBoot(0);   // 경과 시간 없음 → 전체 SIM_BOOT_WAIT_MS 대기
 }
 
 // 펌웨어별 Power-Down URC 판별
