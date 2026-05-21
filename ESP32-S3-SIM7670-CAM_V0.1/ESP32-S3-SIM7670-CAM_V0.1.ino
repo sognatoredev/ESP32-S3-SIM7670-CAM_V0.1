@@ -70,36 +70,72 @@ void setup()
     ledBlink(255, 0, 0, 5, 300);    // red x5: SD fail
   }
 
-  // SIM7670G power on + init
-  ledSet(0, 0, 50);
-  simPowerInit();
-  simPowerOn();
-  simReady = simInit();
-  if (simReady)
+  // ── 분기: Deep Sleep 복귀 vs 최초 부팅 ─────────────────────────────────
+  if (isDeepSleepWake)
   {
-    ledBlink(0, 0, 255, isDeepSleepWake ? 2 : 3, 200);   // blue x2(wake) / x3(boot)
-    Serial.println("[SIM] Ready");
-    saveConfig();                    // refresh m2_point_id / m2_device_id in config.txt
-  }
-  else
-  {
-    ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
-    Serial.println("[SIM] Init failed");
-  }
+    // ── Deep Sleep 복귀 ────────────────────────────────────────────────────
+    // 1순위: SIM 초기화(~30-90 s) 전에 즉시 이미지 캡처.
+    //        타임스탬프 오차 최소화 및 SIM 실패 시에도 이미지 보존 보장.
+    Serial.println("[SYS] Deep Sleep wake — capturing image before SIM init...");
+    String capturedPath = captureAndSaveToSD();
 
-  // ── 분기: 최초 부팅 vs Deep Sleep 복귀 ─────────────────────────────────
-  if (!isDeepSleepWake)
-  {
-    // 최초 부팅: Setup mode (WiFi AP + 설정 페이지)
-    // 5분 타임아웃 또는 "운영 시작" 버튼 → 운영 모드로 전환
-    enterSetupMode();
+    // SIM7670G 초기화 (LTE 망 등록 + NTP 시간 동기화 + 서버 연결 포함)
+    ledSet(0, 0, 50);
+    simPowerInit();
+    simPowerOn();
+    simReady = simInit();
+    if (simReady)
+    {
+      ledBlink(0, 0, 255, 2, 200);   // blue x2: SIM OK (wake)
+      Serial.println("[SIM] Ready");
+      saveConfig();                   // config.txt 에 m2_point_id / m2_device_id 갱신
+    }
+    else
+    {
+      ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
+      Serial.println("[SIM] Init failed");
+    }
+
+    // RTC 보정(correctRtcFromModem) 완료 후 다음 캡처 경계 계산.
+    // loop() 진입 시 nextCaptureTime 이 미래값이 되어
+    // 방금 수행한 캡처가 loop() 에서 즉시 재실행되지 않음.
+    nextCaptureTime = calcNextBoundary();
+    {
+      struct tm nextTm;
+      localtime_r(&nextCaptureTime, &nextTm);
+      Serial.printf("[CAP] Next capture: %02d:%02d:00 KST\n",
+                    nextTm.tm_hour, nextTm.tm_min);
+    }
+
+    // 이미지 전송 (fail-fast: 실패 시 retryPendingFiles 건너뜀)
+    // → loop() 에서 nextCaptureTime 까지 Deep Sleep 진입
+    txAfterWake(capturedPath);
+
+    ledSet(0, 40, 0);   // green: 운영 준비 완료
+    Serial.println("[SYS] Deep Sleep wake path complete");
   }
   else
   {
-    // Deep Sleep 복귀: Setup mode 스킵, 즉시 운영 모드
-    // ntpSynced / nextCaptureTime 은 RTC 메모리에서 복원됨
-    Serial.println("[SYS] Deep Sleep wake — skipping setup mode");
-    ledSet(0, 40, 0);   // green: 운영 준비 완료
+    // ── 최초 부팅 ──────────────────────────────────────────────────────────
+    // SIM7670G 초기화 → Setup mode (WiFi AP + 설정 페이지)
+    // 5분 타임아웃 또는 "운영 시작" 버튼 → 운영 모드로 전환
+    ledSet(0, 0, 50);
+    simPowerInit();
+    simPowerOn();
+    simReady = simInit();
+    if (simReady)
+    {
+      ledBlink(0, 0, 255, 3, 200);   // blue x3: SIM OK (cold boot)
+      Serial.println("[SIM] Ready");
+      saveConfig();                   // config.txt 에 m2_point_id / m2_device_id 갱신
+    }
+    else
+    {
+      ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
+      Serial.println("[SIM] Init failed");
+    }
+
+    enterSetupMode();
   }
 }
 
