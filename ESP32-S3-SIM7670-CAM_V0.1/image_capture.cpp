@@ -6,29 +6,65 @@
 #include "image_tx.h"
 #include "led.h"
 #include "app_httpd.h"
+#include "time_sync.h"
 #include "esp_camera.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
+#include <time.h>
 
 // RTC_DATA_ATTR: Deep Sleep 복귀 시에도 값 보존.
 // captureCount  — 파일명 fallback 카운터 (NTP 미동기 시 사용)
-// g_captureTarget — 전송 전 누적 캡처 수 설정값 (set cnt <n> 으로 변경 가능)
-// s_captureAccum  — 마지막 TX 이후 누적 캡처 수 (g_captureTarget > 1 시 의미 있음)
+// g_captureTarget — TX 경계 주기 설정값 (txPeriod = interval × cnt 분)
 RTC_DATA_ATTR static uint32_t captureCount    = 0;
 RTC_DATA_ATTR        int      g_captureTarget = 1;
-RTC_DATA_ATTR static int      s_captureAccum  = 0;
-int             g_lastCaptureWidth  = 0;   // resolution of most recent capture
+int             g_lastCaptureWidth  = 0;
 int             g_lastCaptureHeight = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TX 경계 판별 헬퍼
+//
+// TX 주기(txPeriodMin) = g_captureIntervalMin × g_captureTarget 분.
+// 자정 기준 누적 분(hour×60+min)이 txPeriodMin 의 배수인 시각을 TX 경계로 정의.
+//
+//   예) interval=2, cnt=15 → txPeriod=30 분
+//       :00, :30 마다 TX.
+//
+//   예) interval=5, cnt=6 → txPeriod=30 분
+//       :00, :30 마다 TX.
+//
+// isTxBoundary(t)         : t 가 TX 경계이면 true.
+// calcNextTxBoundary(t)   : t 이후(포함) 다음 TX 경계 time_t (로그용).
+// ─────────────────────────────────────────────────────────────────────────────
+static bool isTxBoundary(time_t t)
+{
+  int txPeriodMin = g_captureIntervalMin * g_captureTarget;
+  if (txPeriodMin <= 0) return false;
+  struct tm tm_s;
+  localtime_r(&t, &tm_s);
+  int minOfDay = tm_s.tm_hour * 60 + tm_s.tm_min;
+  return (minOfDay % txPeriodMin == 0);
+}
+
+static time_t calcNextTxBoundary(time_t afterTime)
+{
+  int txPeriodMin = g_captureIntervalMin * g_captureTarget;
+  if (txPeriodMin <= 0) return afterTime;
+  struct tm tm_s;
+  localtime_r(&afterTime, &tm_s);
+  int minOfDay  = tm_s.tm_hour * 60 + tm_s.tm_min;
+  int remainder = minOfDay % txPeriodMin;
+  int minsToNext = (remainder == 0) ? txPeriodMin : (txPeriodMin - remainder);
+  // 현재 분의 초(sec) 를 빼서 정확히 분 경계로 맞춤
+  time_t base = afterTime - (time_t)tm_s.tm_sec;
+  return base + (time_t)(minsToNext * 60);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // performCapture()  —  static helper
 //
 // 카메라 해상도 전환 → 노출 안정화 → 플래시 점등 → 캡처 → JPEG 검증 → SD 저장.
 // 성공: 저장된 파일 경로(String) 반환.
-// 실패: "" 반환 (캡처 불가 / JPEG 오류 / SD 쓰기 오류 포함).
-//
-// NOTE: s_captureAccum 는 갱신하지 않는다 — 호출자(captureAndSave / captureAndSaveToSD)
-//       가 성공 여부를 확인한 후 직접 증가시킨다.
+// 실패: "" 반환 (캡처 불가 / JPEG 오류 / SD 쓰기 오류).
 // ─────────────────────────────────────────────────────────────────────────────
 static String performCapture()
 {
@@ -57,7 +93,6 @@ static String performCapture()
   capturePending = true;
 
   // Switch to XGA for the still capture (1024×768).
-  // AT+HTTPDATA hard limit is 319488 bytes; JPEG quality 12 keeps XGA well under that.
   framesize_t prevFramesize = current_cam_framesize;
   sensor_t   *s             = esp_camera_sensor_get();
   int         prevQuality   = s->status.quality;
@@ -69,7 +104,6 @@ static String performCapture()
   delay(300);
 
   // Discard 3 stale frames after resolution change.
-  // OV5640 needs 2-3 frames to stabilise after a timing/resolution switch.
   for (int i = 0; i < 3; i++)
   {
     camera_fb_t *fl = esp_camera_fb_get();
@@ -80,12 +114,11 @@ static String performCapture()
   // Flash on → capture → flash off
   ledSet(255, 255, 255);
   flashLedSet(255, 255, 255);
-  delay(200);   // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
+  delay(200);
   camera_fb_t *fb = esp_camera_fb_get();
-  flashLedSet(0, 0, 0);   // 플래시 먼저 끄기
-  ledSet(0, 40, 0);        // 상태 LED 복구
+  flashLedSet(0, 0, 0);
+  ledSet(0, 40, 0);
 
-  // Restore streaming resolution and quality
   s->set_framesize(s, prevFramesize);
   s->set_quality(s, prevQuality);
   current_cam_framesize = prevFramesize;
@@ -101,9 +134,7 @@ static String performCapture()
 
   size_t imgLen = fb->len;
 
-  // Validate JPEG: must start with FF D8 and contain a SOF0/SOF2 marker.
-  // A missing SOF means the camera output is corrupt (unsupported resolution,
-  // DMA underrun, etc.) — discard and abort rather than save a broken file.
+  // Validate JPEG
   {
     bool jpegStart = (imgLen >= 2 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8);
     bool sofFound  = false;
@@ -188,34 +219,29 @@ static String performCapture()
 //
 // Deep Sleep 복귀 시 1순위 호출 (SIM 초기화 전).
 // 캡처 + SD 저장만 수행하고 TX 는 하지 않는다.
+// TX 경계 판별은 txAfterWake() 에서 scheduledCaptureTime 기준으로 수행.
 // 성공: 파일 경로 반환.  실패: "" 반환.
 // ─────────────────────────────────────────────────────────────────────────────
 String captureAndSaveToSD()
 {
-  String path = performCapture();
-  if (path.length() > 0)
-  {
-    s_captureAccum++;
-    Serial.printf("[CAP] Accumulated %d/%d (no TX yet — SIM not init)\n",
-                  s_captureAccum, g_captureTarget);
-  }
-  return path;
+  return performCapture();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // txAfterWake()
 //
 // Deep Sleep 복귀 후 SIM 초기화(simInit) 완료 시 호출.
-// capturedPath: captureAndSaveToSD() 반환값 ("" = 캡처 실패).
+// capturedPath         : captureAndSaveToSD() 반환값 ("" = 캡처 실패).
+// scheduledCaptureTime : 이번 Wake-up 의 예약 시각.
+//                        setup() 에서 nextCaptureTime 을 RTC 보정 전에 저장한 값.
+//                        simInit 이후에는 30-90 s 경과하여 time(NULL) 로는
+//                        TX 경계를 판별할 수 없으므로 이 값을 사용해야 함.
 //
-// ■ simInit() → simConnect() 내에서 simPostDeviceStatus() 가 이미 호출됨.
-//   여기서는 중복 호출하지 않는다.
-//
-// ■ fail-fast: sendWithRetry() 실패 시 retryPendingFiles() 를 건너뛰고 즉시 반환.
-//   실패한 파일은 /RTU 에 보존 → 다음 Wake-up 시 retryPendingFiles() 로 재전송.
-//   loop() 는 nextCaptureTime 까지 Deep Sleep 에 진입한다.
+// TX 경계 판별: (hour×60+min) % (interval×cnt) == 0
+// simInit() → simConnect() 내에서 simPostDeviceStatus() 이미 호출됨 — 중복 없음.
+// fail-fast: sendWithRetry() 실패 시 retryPendingFiles() 건너뜀.
 // ─────────────────────────────────────────────────────────────────────────────
-void txAfterWake(const String &capturedPath)
+void txAfterWake(const String &capturedPath, time_t scheduledCaptureTime)
 {
   if (!simReady)
   {
@@ -223,33 +249,37 @@ void txAfterWake(const String &capturedPath)
     return;
   }
 
-  if (s_captureAccum < g_captureTarget)
+  int txPeriodMin = g_captureIntervalMin * g_captureTarget;
+
+  if (!isTxBoundary(scheduledCaptureTime))
   {
-    Serial.printf("[TX] Need %d more capture(s) before TX (%d/%d) — skipping TX\n",
-                  g_captureTarget - s_captureAccum, s_captureAccum, g_captureTarget);
+    // 다음 TX 경계 시각 계산하여 로그 출력
+    time_t nextTx = calcNextTxBoundary(scheduledCaptureTime);
+    struct tm nextTm;
+    localtime_r(&nextTx, &nextTm);
+    Serial.printf("[TX] Not a TX boundary (period=%d min) — next TX: %02d:%02d:00 KST\n",
+                  txPeriodMin, nextTm.tm_hour, nextTm.tm_min);
     return;
   }
 
-  s_captureAccum = 0;
+  Serial.printf("[TX] TX boundary reached (period=%d min) — sending files\n", txPeriodMin);
 
-  // AT+HTTPTERM 이후 내부 PDP(IP bearer) 컨텍스트가 비동기 해제됨.
-  // 해제 완료 전에 AT+NETOPEN 을 호출하면 +NETOPEN: 1 (컨텍스트 충돌) 이 발생해
-  // 첫 번째 전송이 거의 항상 실패함. 1.5초 대기로 HTTP → TCP 전환 안정화.
+  // HTTP(simConnect) → TCP 전환 안정화 대기
   delay(1500);
   Serial.println("[TX] HTTP→TCP settling delay done");
 
-  if (g_captureTarget == 1 && capturedPath.length() > 0)
+  if (capturedPath.length() > 0)
   {
-    // cnt=1: 방금 찍은 파일을 우선 전송 (fail-fast)
+    // 방금 찍은 파일 우선 전송 후 나머지 pending 파일 정리 (fail-fast)
     bool ok = sendWithRetry(capturedPath);
     if (ok)
-      retryPendingFiles();   // 이전 미전송 파일 추가 정리
+      retryPendingFiles();
     else
       Serial.println("[TX] Send failed — entering sleep, file retained in RTU");
   }
   else
   {
-    // cnt>1: 누적된 모든 RTU 파일 전송 (oldest-first)
+    // 캡처 실패 시에도 TX 경계이면 이전 누적 파일 전송 시도
     retryPendingFiles();
   }
 }
@@ -257,14 +287,17 @@ void txAfterWake(const String &capturedPath)
 // ─────────────────────────────────────────────────────────────────────────────
 // captureAndSave()  —  loop() 에서 스케줄 도달 시 호출 (운영 모드 정기 캡처)
 //
-// SIM 초기화는 이미 setup() 에서 완료됨.
-// simPostDeviceStatus() 를 TX 직전에 호출하여 최신 신호/배터리 정보를 서버에 전달.
-//
-// fail-fast TX: sendWithRetry() 실패 시 retryPendingFiles() 건너뜀.
-//   실패 파일은 /RTU 보존 → 다음 캡처 후 retryPendingFiles() 로 재전송.
+// TX 경계 판별: nextCaptureTime (현재 캡처의 예약 시각, loop() 에서 아직 갱신 전)
+//   기준으로 isTxBoundary() 를 호출.
+// TX 경계이면: simPostDeviceStatus → delay(1500) → sendWithRetry → retryPendingFiles.
+// fail-fast: sendWithRetry 실패 시 retryPendingFiles 건너뜀.
 // ─────────────────────────────────────────────────────────────────────────────
 void captureAndSave()
 {
+  // nextCaptureTime 은 loop() 에서 captureAndSave() 반환 후에 갱신되므로
+  // 여기서는 현재 캡처의 예약 시각을 가리킨다.
+  time_t thisCaptureTime = nextCaptureTime;
+
   String filePath = performCapture();
   if (filePath.isEmpty())
   {
@@ -272,49 +305,42 @@ void captureAndSave()
     return;
   }
 
-  s_captureAccum++;
-  Serial.printf("[CAP] Accumulated %d/%d\n", s_captureAccum, g_captureTarget);
-
-  if (simReady)
+  if (!simReady)
   {
-    if (s_captureAccum >= g_captureTarget)
-    {
-      s_captureAccum = 0;
+    Serial.println("[SIM] Not ready — file retained in RTU");
+    ledSet(0, 40, 0);
+    return;
+  }
 
-      // 이미지 전송 전 디바이스 상태 POST (모뎀 신호·배터리·시간 포함)
-      SimInfo info = simGetInfo();
-      simPostDeviceStatus(info);
+  int txPeriodMin = g_captureIntervalMin * g_captureTarget;
 
-      // AT+HTTPTERM 이후 내부 PDP(IP bearer) 컨텍스트가 비동기 해제됨.
-      // 해제 완료 전에 AT+NETOPEN 을 호출하면 +NETOPEN: 1 (컨텍스트 충돌) 이 발생해
-      // 첫 번째 전송이 거의 항상 실패함. 1.5초 대기로 HTTP → TCP 전환 안정화.
-      delay(1500);
-      Serial.println("[TX] HTTP→TCP settling delay done");
+  if (isTxBoundary(thisCaptureTime))
+  {
+    Serial.printf("[TX] TX boundary reached (period=%d min) — sending files\n", txPeriodMin);
 
-      if (g_captureTarget == 1)
-      {
-        // fail-fast: 전송 실패 시 retryPendingFiles 건너뜀
-        bool ok = sendWithRetry(filePath);
-        if (ok)
-          retryPendingFiles();
-        else
-          Serial.println("[TX] Send failed — file retained in RTU");
-      }
-      else
-      {
-        // cnt>1: 누적된 모든 RTU 파일 전송 (oldest-first)
-        retryPendingFiles();
-      }
-    }
+    // 이미지 전송 전 디바이스 상태 POST (모뎀 신호·배터리·시간 포함)
+    SimInfo info = simGetInfo();
+    simPostDeviceStatus(info);
+
+    // HTTP → TCP 전환 안정화 대기
+    delay(1500);
+    Serial.println("[TX] HTTP→TCP settling delay done");
+
+    // fail-fast: sendWithRetry 실패 시 retryPendingFiles 건너뜀
+    bool ok = sendWithRetry(filePath);
+    if (ok)
+      retryPendingFiles();
     else
-    {
-      Serial.printf("[CAP] Waiting for %d more capture(s) before TX\n",
-                    g_captureTarget - s_captureAccum);
-    }
+      Serial.println("[TX] Send failed — file retained in RTU");
   }
   else
   {
-    Serial.println("[SIM] Not ready — file retained in RTU");
+    // TX 경계가 아님 — 파일만 저장, 다음 TX 경계 시각 로그 출력
+    time_t nextTx = calcNextTxBoundary(thisCaptureTime);
+    struct tm nextTm;
+    localtime_r(&nextTx, &nextTm);
+    Serial.printf("[CAP] File saved — TX at %02d:%02d:00 KST (period=%d min)\n",
+                  nextTm.tm_hour, nextTm.tm_min, txPeriodMin);
   }
 
   ledSet(0, 40, 0);
