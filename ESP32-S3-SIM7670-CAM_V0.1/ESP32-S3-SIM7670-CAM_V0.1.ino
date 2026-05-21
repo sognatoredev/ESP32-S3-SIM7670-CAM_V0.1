@@ -21,6 +21,17 @@ void setup()
   esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
   bool isDeepSleepWake = (wakeReason == ESP_SLEEP_WAKEUP_TIMER);
 
+  // ── Deep Sleep 복귀: 가장 먼저 PWRKEY 펄스 발사 ─────────────────────────
+  // Camera/Battery/SD init + 이미지 캡처 시간(≈5 s)을 모뎀 부팅(8 s)과 병렬로 활용.
+  // simPowerInit 은 pinMode 설정만 하며 다른 주변장치에 영향 없음.
+  uint32_t simPulseAt = 0;
+  if (isDeepSleepWake)
+  {
+    simPowerInit();
+    simPowerKeyPulse();    // PWRKEY 펄스 — 이후 모든 초기화가 부팅 대기와 병렬 진행
+    simPulseAt = millis();
+  }
+
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
@@ -37,11 +48,12 @@ void setup()
   ledSet(0, 0, 50);   // blue: 초기화 중
 
   if (isDeepSleepWake)
-    Serial.println("\n[SYS] ===== Deep Sleep Wake (Timer) =====");
+    Serial.println("\n[SYS] ===== Deep Sleep Wake (Timer) — SIM booting in background =====");
   else
     Serial.printf("\n[SYS] ===== Cold Boot (cause=%d) =====\n", (int)wakeReason);
 
   // ── 공통 초기화 (최초 부팅 / Deep Sleep 복귀 공통) ───────────────────────
+  // Deep Sleep 복귀 시 이 초기화들은 모뎀 부팅 대기 시간과 병렬로 수행됨.
 
   // Camera init
   if (!cameraInit())
@@ -74,15 +86,21 @@ void setup()
   if (isDeepSleepWake)
   {
     // ── Deep Sleep 복귀 ────────────────────────────────────────────────────
-    // 1순위: SIM 초기화(~30-90 s) 전에 즉시 이미지 캡처.
-    //        타임스탬프 오차 최소화 및 SIM 실패 시에도 이미지 보존 보장.
-    Serial.println("[SYS] Deep Sleep wake — capturing image before SIM init...");
+    // 타임라인:
+    //   t=0      simPowerKeyPulse() — 모뎀 부팅 시작 (8 s 대기 필요)
+    //   t≈0-5s   Serial + Camera + Battery + SD init + 캡처 (병렬)
+    //   t≈5s     simWaitBoot(경과) — 남은 ~3 s 대기
+    //   t≈8s     simInit() — LTE 등록 + NTP + 서버 연결 (30-90 s)
+
+    // 1순위: 이미지 캡처 (모뎀 부팅과 병렬, 이미 공통 초기화 완료 상태)
+    Serial.println("[SYS] Capturing image (parallel with SIM boot)...");
     String capturedPath = captureAndSaveToSD();
+
+    // 남은 모뎀 부팅 대기 (이미 경과한 시간만큼 차감)
+    simWaitBoot(millis() - simPulseAt);
 
     // SIM7670G 초기화 (LTE 망 등록 + NTP 시간 동기화 + 서버 연결 포함)
     ledSet(0, 0, 50);
-    simPowerInit();
-    simPowerOn();
     simReady = simInit();
     if (simReady)
     {

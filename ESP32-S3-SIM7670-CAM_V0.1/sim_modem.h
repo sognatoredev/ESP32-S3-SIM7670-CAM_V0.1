@@ -48,9 +48,11 @@ bool simSyncTime();
 int parseJsonInt(const String &json, const char *key);
 
 // ── Power control ─────────────────────────────────────────────────────────────
-void simPowerInit();   // GPIO setup (call once in setup)
-void simPowerOn();     // PWRKEY pulse to turn modem ON, then waits for boot
-void simPowerOff();    // PWRKEY pulse to turn modem OFF
+void simPowerInit();                      // GPIO setup (call once in setup)
+void simPowerOn();                        // PWRKEY pulse + full boot wait (직렬 방식)
+void simPowerKeyPulse();                  // PWRKEY 펄스만 발생 — 대기 없음 (병렬 최적화용)
+void simWaitBoot(uint32_t elapsedMs = 0); // 부팅 대기; elapsedMs 만큼 이미 경과한 시간 보상
+void simPowerOff();                       // PWRKEY pulse to turn modem OFF
 
 // ── Network registration wait ─────────────────────────────────────────────────
 // LTE 망 등록(AT+CEREG? stat=1/5)을 확인할 때까지 2초 간격으로 폴링.
