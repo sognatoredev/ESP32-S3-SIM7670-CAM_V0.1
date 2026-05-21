@@ -52,5 +52,11 @@ void simPowerInit();   // GPIO setup (call once in setup)
 void simPowerOn();     // PWRKEY pulse to turn modem ON, then waits for boot
 void simPowerOff();    // PWRKEY pulse to turn modem OFF
 
+// ── Network registration wait ─────────────────────────────────────────────────
+// LTE 망 등록(AT+CEREG? stat=1/5)을 확인할 때까지 2초 간격으로 폴링.
+// timeoutMs(기본 90초) 내에 등록되지 않으면 false 반환.
+// simInit() 내부에서 simConnect() 이전에 호출됨.
+bool simWaitNetReg(uint32_t timeoutMs = 90000);
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 bool simInit();

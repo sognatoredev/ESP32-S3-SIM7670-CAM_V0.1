@@ -872,6 +872,84 @@ String simTcpReadResponse(int link, uint32_t timeoutMs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// simWaitNetReg()
+//   SIM7670G 가 LTE 망에 등록될 때까지 대기.
+//
+//   [왜 필요한가]
+//   simPowerOn() 이 반환되면 모뎀 UART 가 응답하는 "부팅 완료" 상태이지,
+//   LTE 망에 등록된 상태가 아님. 망 등록은 이후 15~60초(커버리지에 따라)
+//   추가로 소요됨. 이 대기 없이 simConnect()를 호출하면:
+//     - AT+CNTP (NTP)  → PDP 컨텍스트 없음 → 실패
+//     - AT+CCLK?       → 모뎀 RTC 미초기화 → 시간 없음
+//     - HTTP POST/GET  → LTE 베어러 없음 → 실패
+//     - correctRtcFromModem() → 호출 불가 → ESP32 RTC 드리프트 누적
+//
+//   [판별 방법]
+//   AT+CEREG?  +CEREG: <n>,<stat>
+//     stat=1 → 홈 망 등록됨
+//     stat=5 → 로밍 등록됨
+//     stat=2 → 검색 중 (계속 대기)
+//     stat=0 → 미등록/검색 안 함
+//     stat=3 → 등록 거부 (SIM 문제 등)
+//
+//   [타임아웃] 기본 90초. 실패해도 simConnect()는 호출되어 서버 오류가
+//   로그에 남음 (무한 대기 방지).
+// ─────────────────────────────────────────────────────────────────────────────
+bool simWaitNetReg(uint32_t timeoutMs)
+{
+  // 이미 등록된 경우 즉시 반환 (Deep Sleep 복귀 후 빠른 재등록 시)
+  String first = simSendAT("AT+CEREG?", 3000);
+  int fi = first.indexOf("+CEREG:");
+  if (fi != -1)
+  {
+    int comma = first.indexOf(',', fi);
+    int statStart = (comma != -1) ? comma + 1 : fi + 7;
+    int stat = first.substring(statStart).toInt();
+    if (stat == 1 || stat == 5)
+    {
+      Serial.printf("[SIM] LTE already registered (stat=%d)\n", stat);
+      return true;
+    }
+  }
+
+  Serial.print("[SIM] Waiting for LTE registration (up to " +
+               String(timeoutMs / 1000) + " s)");
+
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs)
+  {
+    delay(2000);
+    Serial.print(".");
+
+    String resp = simSendAT("AT+CEREG?", 3000);
+    int idx = resp.indexOf("+CEREG:");
+    if (idx == -1) continue;
+
+    // +CEREG: <n>,<stat>  (query response: two fields separated by comma)
+    int comma    = resp.indexOf(',', idx);
+    int statStart = (comma != -1) ? comma + 1 : idx + 7;
+    int stat = resp.substring(statStart).toInt();
+
+    if (stat == 1 || stat == 5)
+    {
+      Serial.printf("\n[SIM] LTE registered (stat=%d, elapsed=%lu ms)\n",
+                    stat, (unsigned long)(millis() - t0));
+      return true;
+    }
+
+    if (stat == 3)   // 등록 거부 (SIM 인증 실패, APN 설정 오류 등)
+    {
+      Serial.println("\n[SIM] Registration denied (stat=3) — check SIM/APN");
+      return false;
+    }
+    // stat=0,2: 대기 계속
+  }
+
+  Serial.println("\n[SIM] LTE registration timeout");
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SIM7670G init
 //   Boot at SIM_BAUD_INIT (115200) then upgrade to SIM_BAUD_FAST (230400).
 //   AT+IPR is volatile — reverts to 115200 on power-off, so it is set every boot.
@@ -946,12 +1024,20 @@ bool simInit()
     Serial.println("[SIM] " + String(SIM_BAUD_FAST) + " bps OK");
   }
 
-  // Network status
+  // ── LTE 망 등록 대기 ──────────────────────────────────────────────────────
+  // 이 대기가 없으면 AT+CNTP/AT+CCLK?/HTTP 가 모두 실패함.
+  // 등록 실패(타임아웃)해도 simConnect()는 호출 — 서버 오류가 로그에 기록됨.
+  bool netReg = simWaitNetReg(90000);
+  if (!netReg)
+    Serial.println("[SIM] Warning: proceeding without confirmed LTE registration");
+
+  // ── 등록 후 망 상태 확인 ──────────────────────────────────────────────────
+  Serial.println("[SIM] CEREG: " + simSendAT("AT+CEREG?", 3000));
   Serial.println("[SIM] CGREG: " + simSendAT("AT+CGREG?", 3000));
   Serial.println("[SIM] CSQ:   " + simSendAT("AT+CSQ",    2000));
   Serial.println("[SIM] CPSI:  " + simSendAT("AT+CPSI?",  3000));
 
-  // POST device status + GET device settings
+  // ── 디바이스 상태 POST + 설정값 GET ──────────────────────────────────────
   simConnect();
 
   Serial.println("[SIM] Init complete");
