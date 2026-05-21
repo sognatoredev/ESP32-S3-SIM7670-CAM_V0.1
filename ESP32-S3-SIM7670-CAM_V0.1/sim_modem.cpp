@@ -206,6 +206,16 @@ int csqToStrength(int csq)
 // Parse modem time and convert to KST (UTC+9)
 // AT+CCLK response: +CCLK: "YY/MM/DD,HH:MM:SS±ZZ"
 //   ZZ = UTC offset in quarter-hour units (+36 = UTC+9 = KST)
+//
+// ■ SIM7670G 실측 동작:
+//   AT+CCLK? 는 항상 UTC 시각을 반환하고, ±ZZ 는 망에서 받은 타임존 정보만 표시.
+//   예) +CCLK: "26/05/21,05:45:14+36"
+//       → UTC 05:45:14,  타임존 +36쿼터(= UTC+9 = KST)
+//       → KST = 05:45:14 + 36×15분 = 14:45:14
+//
+//   ※ 이전 코드의 착오: "모뎀이 LOCAL 시각을 반환한다"고 가정하여
+//      diffMin = (36 - tzQuarters)×15 로 계산 → tzQuarters=36 이면 diffMin=0 (변환 없음).
+//      tzQuarters=0(타임존 미제공) 일 때만 우연히 +9h 가 적용되어 맞았던 것.
 String simGetModemTime()
 {
   String resp = simSendAT("AT+CCLK?", 3000);
@@ -234,8 +244,19 @@ String simGetModemTime()
   Serial.printf("[SIM] CCLK parsed: 20%02d-%02d-%02d %02d:%02d:%02d  TZ=%+d quarters\n",
                 yy, mo, dd, hh, mm, ss, tzQuarters);
 
-  // Convert to KST: KST = local + (36 - tzQuarters) * 15 min
-  int diffMin   = (36 - tzQuarters) * 15;
+  // UTC → KST 변환:
+  //   모뎀은 UTC 시각을 반환하고 tzQuarters 는 망 타임존 오프셋(분/15).
+  //   UTC + tzQuarters×15 min = 현지 시각(KST).
+  //   tzQuarters=36 → +540 min = +9h → UTC+9 = KST.
+  //
+  //   tzQuarters=0(망 타임존 미제공 또는 UTC망) 일 때는
+  //   config.h 의 NTP_GMT_OFFSET(KST, +9h) 으로 폴백.
+  int diffMin;
+  if (tzQuarters != 0)
+    diffMin = tzQuarters * 15;                    // UTC + 망 타임존 오프셋 = 현지 시각
+  else
+    diffMin = (int)(NTP_GMT_OFFSET / 60L);        // 폴백: 컴파일 타임 KST 오프셋(540 min)
+
   int totalMin  = hh * 60 + mm + diffMin;
   int dayOffset = 0;
 
