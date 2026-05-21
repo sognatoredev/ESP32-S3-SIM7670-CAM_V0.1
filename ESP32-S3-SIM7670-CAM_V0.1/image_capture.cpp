@@ -20,7 +20,17 @@ RTC_DATA_ATTR static int      s_captureAccum  = 0;
 int             g_lastCaptureWidth  = 0;   // resolution of most recent capture
 int             g_lastCaptureHeight = 0;
 
-void captureAndSave()
+// ─────────────────────────────────────────────────────────────────────────────
+// performCapture()  —  static helper
+//
+// 카메라 해상도 전환 → 노출 안정화 → 플래시 점등 → 캡처 → JPEG 검증 → SD 저장.
+// 성공: 저장된 파일 경로(String) 반환.
+// 실패: "" 반환 (캡처 불가 / JPEG 오류 / SD 쓰기 오류 포함).
+//
+// NOTE: s_captureAccum 는 갱신하지 않는다 — 호출자(captureAndSave / captureAndSaveToSD)
+//       가 성공 여부를 확인한 후 직접 증가시킨다.
+// ─────────────────────────────────────────────────────────────────────────────
+static String performCapture()
 {
   struct tm timeinfo;
   bool hasTime = getLocalTime(&timeinfo);
@@ -41,21 +51,20 @@ void captureAndSave()
     Serial.println("[CAP] SD not ready, skipping");
     ledBlink(255, 0, 0, 3, 400);
     ledSet(0, 40, 0);
-    return;
+    return "";
   }
 
   capturePending = true;
 
-  // Switch to FHD for the still capture.
-  // OV5640 natively supports FHD (1920x1080).
-  // AT+HTTPDATA hard limit is 319488 bytes; JPEG quality 12 keeps FHD under ~200 KB.
+  // Switch to XGA for the still capture (1024×768).
+  // AT+HTTPDATA hard limit is 319488 bytes; JPEG quality 12 keeps XGA well under that.
   framesize_t prevFramesize = current_cam_framesize;
   sensor_t   *s             = esp_camera_sensor_get();
   int         prevQuality   = s->status.quality;
-  // s->set_framesize(s, FRAMESIZE_FHD); // default.
-  // s->set_framesize(s, FRAMESIZE_HD); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_HD 1280x720
-  s->set_framesize(s, FRAMESIZE_XGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_XGA 1024x768    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
-  // s->set_framesize(s, FRAMESIZE_SVGA); // 2026.05.04 feat.CSH : 해상도 변경 테스트 FRAMESIZE_SVGA 800x600    현재 캡처는 되지만 서버로 전송 중 계속 Error 발생
+  // s->set_framesize(s, FRAMESIZE_FHD);  // 1920×1080
+  // s->set_framesize(s, FRAMESIZE_HD);   // 1280×720
+  s->set_framesize(s, FRAMESIZE_XGA);     // 1024×768  (현재 선택)
+  // s->set_framesize(s, FRAMESIZE_SVGA); // 800×600
   s->set_quality(s, 12);
   delay(300);
 
@@ -68,13 +77,10 @@ void captureAndSave()
     delay(50);
   }
 
-  // Flash on -> capture -> flash off
-  // GPIO38 상태 LED + GPIO1 플래시 8개 동시 점등
+  // Flash on → capture → flash off
   ledSet(255, 255, 255);
   flashLedSet(255, 255, 255);
-  // delay(200);
-  // delay(150); // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
-  delay(200); // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
+  delay(200);   // OV5640 AE 안정화: 플래시 점등 후 3~4프레임(~100ms) 수렴 대기
   camera_fb_t *fb = esp_camera_fb_get();
   flashLedSet(0, 0, 0);   // 플래시 먼저 끄기
   ledSet(0, 40, 0);        // 상태 LED 복구
@@ -90,7 +96,7 @@ void captureAndSave()
     Serial.println("[CAP] Capture failed");
     ledBlink(255, 0, 0, 3, 400);
     ledSet(0, 40, 0);
-    return;
+    return "";
   }
 
   size_t imgLen = fb->len;
@@ -126,11 +132,11 @@ void captureAndSave()
       esp_camera_fb_return(fb);
       ledBlink(255, 80, 0, 3, 400);
       ledSet(0, 40, 0);
-      return;
+      return "";
     }
   }
 
-  char   dirPath[56], filePath[80];
+  char dirPath[56], filePath[80];
 
   if (hasTime)
   {
@@ -155,7 +161,7 @@ void captureAndSave()
     esp_camera_fb_return(fb);
     ledBlink(255, 0, 0, 3, 400);
     ledSet(0, 40, 0);
-    return;
+    return "";
   }
 
   size_t written = file.write(fb->buf, imgLen);
@@ -168,10 +174,103 @@ void captureAndSave()
     Serial.printf("[CAP] Write error %u/%u bytes\n", (unsigned)written, (unsigned)imgLen);
     ledBlink(255, 80, 0, 3, 400);
     ledSet(0, 40, 0);
-    return;
+    return "";
   }
+
   Serial.printf("[CAP] Saved: %s (%u bytes)\n", filePath, (unsigned)written);
   saveConfig();   // update Image Resolution in config.txt
+
+  return String(filePath);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// captureAndSaveToSD()
+//
+// Deep Sleep 복귀 시 1순위 호출 (SIM 초기화 전).
+// 캡처 + SD 저장만 수행하고 TX 는 하지 않는다.
+// 성공: 파일 경로 반환.  실패: "" 반환.
+// ─────────────────────────────────────────────────────────────────────────────
+String captureAndSaveToSD()
+{
+  String path = performCapture();
+  if (path.length() > 0)
+  {
+    s_captureAccum++;
+    Serial.printf("[CAP] Accumulated %d/%d (no TX yet — SIM not init)\n",
+                  s_captureAccum, g_captureTarget);
+  }
+  return path;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// txAfterWake()
+//
+// Deep Sleep 복귀 후 SIM 초기화(simInit) 완료 시 호출.
+// capturedPath: captureAndSaveToSD() 반환값 ("" = 캡처 실패).
+//
+// ■ simInit() → simConnect() 내에서 simPostDeviceStatus() 가 이미 호출됨.
+//   여기서는 중복 호출하지 않는다.
+//
+// ■ fail-fast: sendWithRetry() 실패 시 retryPendingFiles() 를 건너뛰고 즉시 반환.
+//   실패한 파일은 /RTU 에 보존 → 다음 Wake-up 시 retryPendingFiles() 로 재전송.
+//   loop() 는 nextCaptureTime 까지 Deep Sleep 에 진입한다.
+// ─────────────────────────────────────────────────────────────────────────────
+void txAfterWake(const String &capturedPath)
+{
+  if (!simReady)
+  {
+    Serial.println("[TX] SIM not ready — file retained in RTU");
+    return;
+  }
+
+  if (s_captureAccum < g_captureTarget)
+  {
+    Serial.printf("[TX] Need %d more capture(s) before TX (%d/%d) — skipping TX\n",
+                  g_captureTarget - s_captureAccum, s_captureAccum, g_captureTarget);
+    return;
+  }
+
+  s_captureAccum = 0;
+
+  // AT+HTTPTERM 이후 내부 PDP(IP bearer) 컨텍스트가 비동기 해제됨.
+  // 해제 완료 전에 AT+NETOPEN 을 호출하면 +NETOPEN: 1 (컨텍스트 충돌) 이 발생해
+  // 첫 번째 전송이 거의 항상 실패함. 1.5초 대기로 HTTP → TCP 전환 안정화.
+  delay(1500);
+  Serial.println("[TX] HTTP→TCP settling delay done");
+
+  if (g_captureTarget == 1 && capturedPath.length() > 0)
+  {
+    // cnt=1: 방금 찍은 파일을 우선 전송 (fail-fast)
+    bool ok = sendWithRetry(capturedPath);
+    if (ok)
+      retryPendingFiles();   // 이전 미전송 파일 추가 정리
+    else
+      Serial.println("[TX] Send failed — entering sleep, file retained in RTU");
+  }
+  else
+  {
+    // cnt>1: 누적된 모든 RTU 파일 전송 (oldest-first)
+    retryPendingFiles();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// captureAndSave()  —  loop() 에서 스케줄 도달 시 호출 (운영 모드 정기 캡처)
+//
+// SIM 초기화는 이미 setup() 에서 완료됨.
+// simPostDeviceStatus() 를 TX 직전에 호출하여 최신 신호/배터리 정보를 서버에 전달.
+//
+// fail-fast TX: sendWithRetry() 실패 시 retryPendingFiles() 건너뜀.
+//   실패 파일은 /RTU 보존 → 다음 캡처 후 retryPendingFiles() 로 재전송.
+// ─────────────────────────────────────────────────────────────────────────────
+void captureAndSave()
+{
+  String filePath = performCapture();
+  if (filePath.isEmpty())
+  {
+    ledSet(0, 40, 0);
+    return;
+  }
 
   s_captureAccum++;
   Serial.printf("[CAP] Accumulated %d/%d\n", s_captureAccum, g_captureTarget);
@@ -194,12 +293,16 @@ void captureAndSave()
 
       if (g_captureTarget == 1)
       {
-        sendWithRetry(String(filePath));
-        retryPendingFiles();
+        // fail-fast: 전송 실패 시 retryPendingFiles 건너뜀
+        bool ok = sendWithRetry(filePath);
+        if (ok)
+          retryPendingFiles();
+        else
+          Serial.println("[TX] Send failed — file retained in RTU");
       }
       else
       {
-        // Send all accumulated RTU files (oldest first)
+        // cnt>1: 누적된 모든 RTU 파일 전송 (oldest-first)
         retryPendingFiles();
       }
     }
