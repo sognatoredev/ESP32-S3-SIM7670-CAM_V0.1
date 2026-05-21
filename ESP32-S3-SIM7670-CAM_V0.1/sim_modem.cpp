@@ -244,19 +244,11 @@ String simGetModemTime()
   Serial.printf("[SIM] CCLK parsed: 20%02d-%02d-%02d %02d:%02d:%02d  TZ=%+d quarters\n",
                 yy, mo, dd, hh, mm, ss, tzQuarters);
 
-  // UTC → KST 변환:
-  //   모뎀은 UTC 시각을 반환하고 tzQuarters 는 망 타임존 오프셋(분/15).
-  //   UTC + tzQuarters×15 min = 현지 시각(KST).
-  //   tzQuarters=36 → +540 min = +9h → UTC+9 = KST.
-  //
-  //   tzQuarters=0(망 타임존 미제공 또는 UTC망) 일 때는
-  //   config.h 의 NTP_GMT_OFFSET(KST, +9h) 으로 폴백.
-  int diffMin;
-  if (tzQuarters != 0)
-    diffMin = tzQuarters * 15;                    // UTC + 망 타임존 오프셋 = 현지 시각
-  else
-    diffMin = (int)(NTP_GMT_OFFSET / 60L);        // 폴백: 컴파일 타임 KST 오프셋(540 min)
-
+  // UTC → KST 변환 (고정 오프셋):
+  //   AT+CTZU=0 적용으로 simInit() 이후 AT+CCLK? 는 항상 UTC 를 반환.
+  //   tzQuarters 는 로그 확인용으로만 파싱하고 변환에는 사용하지 않는다.
+  //   NTP_GMT_OFFSET (config.h, KST = UTC+9 = 32400 s) 으로 고정 변환.
+  int diffMin   = (int)(NTP_GMT_OFFSET / 60L);    // 540 min = +9h (KST)
   int totalMin  = hh * 60 + mm + diffMin;
   int dayOffset = 0;
 
@@ -1072,6 +1064,20 @@ bool simInit()
   {
     Serial.println("[SIM] " + String(SIM_BAUD_FAST) + " bps OK");
   }
+
+  // ── NITZ 자동 시간 동기화 비활성화 ──────────────────────────────────────
+  // AT+CTZU=0: 망이 제공하는 NITZ(Network Identity and Time Zone) 로
+  //   모뎀 클럭이 자동 업데이트되는 것을 막는다.
+  //
+  // 배경: SIM7670G 는 AT+CNTP(NTP 동기화) 후에는 UTC 를 AT+CCLK? 로 반환하지만,
+  //   LTE 등록 중 NITZ 업데이트가 발생하면 현지 시각(KST)으로 클럭이 덮어써진다.
+  //   결과적으로 같은 simGetModemTime() 호출이 상황에 따라 UTC 또는 KST 를 반환하여
+  //   KST 변환이 불규칙(+9h 중복 또는 누락)하게 된다.
+  //
+  // AT+CTZU=0 적용 후: 시각은 오직 AT+CNTP 로만 갱신되고 항상 UTC 를 반환.
+  //   simGetModemTime() 에서 항상 +9h(NTP_GMT_OFFSET) 를 더해 KST 를 산출.
+  simSendAT("AT+CTZU=0", 1000);
+  Serial.println("[SIM] NITZ auto-tz update disabled (AT+CTZU=0)");
 
   // ── LTE 망 등록 대기 ──────────────────────────────────────────────────────
   // 이 대기가 없으면 AT+CNTP/AT+CCLK?/HTTP 가 모두 실패함.
