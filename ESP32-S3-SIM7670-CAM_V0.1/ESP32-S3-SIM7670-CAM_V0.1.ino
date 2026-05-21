@@ -93,6 +93,9 @@ void setup()
     //   t≈8s     simInit() — LTE 등록 + NTP + 서버 연결 (30-90 s)
 
     // 1순위: 이미지 캡처 (모뎀 부팅과 병렬, 이미 공통 초기화 완료 상태)
+    // scheduledCaptureTime: RTC 보정 전 예약 시각 — txAfterWake() TX 경계 판별에 사용.
+    // (simInit 이후 30-90 s 경과하므로 time(NULL) 로는 경계를 잡을 수 없음)
+    time_t scheduledCaptureTime = nextCaptureTime;
     Serial.println("[SYS] Capturing image (parallel with SIM boot)...");
     String capturedPath = captureAndSaveToSD();
 
@@ -125,9 +128,10 @@ void setup()
                     nextTm.tm_hour, nextTm.tm_min);
     }
 
-    // 이미지 전송 (fail-fast: 실패 시 retryPendingFiles 건너뜀)
-    // → loop() 에서 nextCaptureTime 까지 Deep Sleep 진입
-    txAfterWake(capturedPath);
+    // 정각 기준 TX 경계 판별 후 이미지 전송.
+    // scheduledCaptureTime 기준: (hour×60+min) % (interval×cnt) == 0 이면 TX.
+    // fail-fast: sendWithRetry 실패 시 retryPendingFiles 건너뜀 → loop() 에서 Deep Sleep.
+    txAfterWake(capturedPath, scheduledCaptureTime);
 
     ledSet(0, 40, 0);   // green: 운영 준비 완료
     Serial.println("[SYS] Deep Sleep wake path complete");
