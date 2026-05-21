@@ -385,6 +385,20 @@ static void exitSetupMode()
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);
 
+  // ── 다음 캡처 시각 재계산 ──────────────────────────────────────────────
+  // set_handler() 에서 g_captureIntervalMin 이 변경되었을 수 있음.
+  // simInit() 시점의 nextCaptureTime 은 변경 전 interval 로 계산된 값이므로
+  // 여기서 현재 interval 기준으로 다시 계산해야 올바른 경계에서 Sleep / Wake-up 됨.
+  // (버튼 누름·5분 타임아웃 모두 이 함수를 거치므로 한 곳에서 처리.)
+  if (ntpSynced)
+  {
+    nextCaptureTime = calcNextBoundary();
+    struct tm nextTm;
+    localtime_r(&nextCaptureTime, &nextTm);
+    Serial.printf("[SETUP] nextCaptureTime recalculated — intv=%d min  next: %02d:%02d:00 KST\n",
+                  g_captureIntervalMin, nextTm.tm_hour, nextTm.tm_min);
+  }
+
   g_setupMode = false;
   ledSet(0, 40, 0);   // green: standby
 }
