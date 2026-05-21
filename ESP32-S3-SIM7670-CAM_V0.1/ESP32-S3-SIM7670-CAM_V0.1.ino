@@ -21,26 +21,49 @@ void setup()
   esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
   bool isDeepSleepWake = (wakeReason == ESP_SLEEP_WAKEUP_TIMER);
 
-  // ── Deep Sleep 복귀: 가장 먼저 PWRKEY 펄스 발사 ─────────────────────────
-  // Camera/Battery/SD init + 이미지 캡처 시간(≈5 s)을 모뎀 부팅(8 s)과 병렬로 활용.
-  // simPowerInit 은 pinMode 설정만 하며 다른 주변장치에 영향 없음.
+  // ── Deep Sleep 복귀: TX 경계 여부 판별 후 SIM 전원 결정 ─────────────────
+  // SIM7670G 는 TX 경계(정각 기준)에서만 전원을 켠다.
+  // 비TX 경계 Wake-up: 이미지 캡처 후 즉시 Deep Sleep → 모뎀 부팅 30-90 s 절약.
+  //
+  // nextCaptureTime / g_captureIntervalMin / g_captureTarget 은 RTC_DATA_ATTR 로
+  // Deep Sleep 에서도 보존됨 → Serial.begin 이전에 판별 가능.
+  //
+  // TX 경계이면 즉시 PWRKEY 펄스 발사 → 이후 모든 초기화가 모뎀 부팅과 병렬 진행.
+  bool     isTxWake   = false;
   uint32_t simPulseAt = 0;
   if (isDeepSleepWake)
   {
+    // TZ 설정: localtime_r() 호출 전 필요 (setenv 는 RAM, Deep Sleep 후 초기화됨)
+    setenv("TZ", "KST-9", 1);
+    tzset();
+
+    // TX 경계 판별: (hour×60+min) % (interval×cnt) == 0
+    int txPeriodMin = g_captureIntervalMin * g_captureTarget;
+    if (txPeriodMin > 0 && nextCaptureTime > 0)
+    {
+      struct tm tm_s;
+      localtime_r(&nextCaptureTime, &tm_s);
+      isTxWake = ((tm_s.tm_hour * 60 + tm_s.tm_min) % txPeriodMin == 0);
+    }
+
+    // PWRKEY GPIO 초기화 (TX 여부 무관, 핀을 HIGH(비활성) 로 고정)
     simPowerInit();
-    simPowerKeyPulse();    // PWRKEY 펄스 — 이후 모든 초기화가 부팅 대기와 병렬 진행
-    simPulseAt = millis();
+
+    if (isTxWake)
+    {
+      // TX 경계: 즉시 PWRKEY 펄스 발사 (이후 Camera/SD init + 캡처와 병렬 부팅)
+      simPowerKeyPulse();
+      simPulseAt = millis();
+    }
   }
 
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
 
-  // ── 타임존 설정 (최우선, 부팅/Deep Sleep 복귀 공통) ─────────────────────
+  // ── 타임존 설정 (부팅/Deep Sleep 복귀 공통) ─────────────────────────────
   // setenv() 는 프로세스 RAM 에 저장되므로 Deep Sleep(완전 재부팅) 후 초기화됨.
-  // applyKSTTime() / correctRtcFromModem() 내부에만 두면 HTTP 실패 시 누락되어
-  // localtime_r() 가 UTC 를 반환하는 문제 발생.
-  // setup() 최상단에서 무조건 설정하여 항상 KST(UTC+9) 보장.
+  // Deep Sleep 복귀 경로에서는 위에서 이미 설정했으나 cold boot 를 위해 여기서도 설정.
   setenv("TZ", "KST-9", 1);
   tzset();
 
@@ -48,12 +71,21 @@ void setup()
   ledSet(0, 0, 50);   // blue: 초기화 중
 
   if (isDeepSleepWake)
-    Serial.println("\n[SYS] ===== Deep Sleep Wake (Timer) — SIM booting in background =====");
+  {
+    int txPeriod = g_captureIntervalMin * g_captureTarget;
+    if (isTxWake)
+      Serial.printf("\n[SYS] ===== Deep Sleep Wake — TX boundary (period=%d min, SIM ON) =====\n",
+                    txPeriod);
+    else
+      Serial.printf("\n[SYS] ===== Deep Sleep Wake — Capture only (period=%d min, SIM OFF) =====\n",
+                    txPeriod);
+  }
   else
     Serial.printf("\n[SYS] ===== Cold Boot (cause=%d) =====\n", (int)wakeReason);
 
-  // ── 공통 초기화 (최초 부팅 / Deep Sleep 복귀 공통) ───────────────────────
-  // Deep Sleep 복귀 시 이 초기화들은 모뎀 부팅 대기 시간과 병렬로 수행됨.
+  // ── 공통 초기화 ──────────────────────────────────────────────────────────
+  // TX Wake 시: Camera/SD init + 캡처가 모뎀 부팅 8 s 와 병렬로 수행됨.
+  // 비TX Wake 시: SIM 부팅 없음 — 캡처 후 즉시 Sleep.
 
   // Camera init
   if (!cameraInit())
@@ -85,41 +117,42 @@ void setup()
   // ── 분기: Deep Sleep 복귀 vs 최초 부팅 ─────────────────────────────────
   if (isDeepSleepWake)
   {
-    // ── Deep Sleep 복귀 ────────────────────────────────────────────────────
-    // 타임라인:
-    //   t=0      simPowerKeyPulse() — 모뎀 부팅 시작 (8 s 대기 필요)
-    //   t≈0-5s   Serial + Camera + Battery + SD init + 캡처 (병렬)
-    //   t≈5s     simWaitBoot(경과) — 남은 ~3 s 대기
-    //   t≈8s     simInit() — LTE 등록 + NTP + 서버 연결 (30-90 s)
-
-    // 1순위: 이미지 캡처 (모뎀 부팅과 병렬, 이미 공통 초기화 완료 상태)
-    // scheduledCaptureTime: RTC 보정 전 예약 시각 — txAfterWake() TX 경계 판별에 사용.
-    // (simInit 이후 30-90 s 경과하므로 time(NULL) 로는 경계를 잡을 수 없음)
+    // 예약 시각 저장 (RTC 보정 전): txAfterWake() TX 경계 판별에 사용.
+    // simInit 이후 30-90 s 경과하므로 time(NULL) 로는 경계를 잡을 수 없음.
     time_t scheduledCaptureTime = nextCaptureTime;
-    Serial.println("[SYS] Capturing image (parallel with SIM boot)...");
+
+    if (isTxWake)
+      Serial.println("[SYS] Capturing image (parallel with SIM boot)...");
+    else
+      Serial.println("[SYS] Capturing image (SIM stays OFF)...");
+
+    // ── 1순위: 이미지 캡처 ───────────────────────────────────────────────
     String capturedPath = captureAndSaveToSD();
 
-    // 남은 모뎀 부팅 대기 (이미 경과한 시간만큼 차감)
-    simWaitBoot(millis() - simPulseAt);
-
-    // SIM7670G 초기화 (LTE 망 등록 + NTP 시간 동기화 + 서버 연결 포함)
-    ledSet(0, 0, 50);
-    simReady = simInit();
-    if (simReady)
+    if (isTxWake)
     {
-      ledBlink(0, 0, 255, 2, 200);   // blue x2: SIM OK (wake)
-      Serial.println("[SIM] Ready");
-      saveConfig();                   // config.txt 에 m2_point_id / m2_device_id 갱신
-    }
-    else
-    {
-      ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
-      Serial.println("[SIM] Init failed");
+      // ── TX 경계: SIM 초기화 ──────────────────────────────────────────────
+      // 남은 모뎀 부팅 대기 (이미 경과한 시간만큼 차감)
+      simWaitBoot(millis() - simPulseAt);
+
+      ledSet(0, 0, 50);
+      simReady = simInit();   // LTE 망 등록 + NTP 시간 동기화 + 서버 연결
+      if (simReady)
+      {
+        ledBlink(0, 0, 255, 2, 200);   // blue x2: SIM OK (wake)
+        Serial.println("[SIM] Ready");
+        saveConfig();                   // config.txt 에 m2_point_id / m2_device_id 갱신
+      }
+      else
+      {
+        ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
+        Serial.println("[SIM] Init failed");
+      }
     }
 
-    // RTC 보정(correctRtcFromModem) 완료 후 다음 캡처 경계 계산.
-    // loop() 진입 시 nextCaptureTime 이 미래값이 되어
-    // 방금 수행한 캡처가 loop() 에서 즉시 재실행되지 않음.
+    // 다음 캡처 경계 계산.
+    // TX Wake: simInit() 내 RTC 보정 후 정확한 시각 기준.
+    // 비TX Wake: 드리프트된 RTC 기준이지만 분 단위 오차이므로 허용 범위.
     nextCaptureTime = calcNextBoundary();
     {
       struct tm nextTm;
@@ -128,13 +161,18 @@ void setup()
                     nextTm.tm_hour, nextTm.tm_min);
     }
 
-    // 정각 기준 TX 경계 판별 후 이미지 전송.
-    // scheduledCaptureTime 기준: (hour×60+min) % (interval×cnt) == 0 이면 TX.
-    // fail-fast: sendWithRetry 실패 시 retryPendingFiles 건너뜀 → loop() 에서 Deep Sleep.
-    txAfterWake(capturedPath, scheduledCaptureTime);
+    if (isTxWake)
+    {
+      // TX 경계: 이미지 전송 (fail-fast: 실패 시 retryPendingFiles 건너뜀)
+      txAfterWake(capturedPath, scheduledCaptureTime);
+    }
+    else
+    {
+      // 비TX 경계: 이미지 저장 완료 — loop() 에서 즉시 Deep Sleep 진입
+      Serial.println("[SYS] Capture-only wake complete — proceeding to sleep");
+    }
 
-    ledSet(0, 40, 0);   // green: 운영 준비 완료
-    Serial.println("[SYS] Deep Sleep wake path complete");
+    ledSet(0, 40, 0);   // green: 완료
   }
   else
   {
