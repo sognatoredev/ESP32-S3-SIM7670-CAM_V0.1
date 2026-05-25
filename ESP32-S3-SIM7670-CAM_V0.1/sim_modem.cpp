@@ -464,7 +464,11 @@ bool simHttpPostEmpty(const String &url)
 bool simPostDeviceStatus(const SimInfo &info)
 {
   int year = 2000, mon = 1, day = 1, hh = 0, mm = 0, ss = 0;
-  if (!info.modemTime.isEmpty())
+  // modemTime 이 유효한 시각(2000-01-01 기본값이 아님)일 때만 사용.
+  // NTP 실패 시 모뎀 CCLK 는 2000-01-01 을 반환 → ESP32 RTC(Deep Sleep 보존) 를 대신 사용.
+  bool modemTimeValid = !info.modemTime.isEmpty() &&
+                        !info.modemTime.startsWith("2000-01-01");
+  if (modemTimeValid)
   {
     sscanf(info.modemTime.c_str(), "%d-%d-%d %d:%d:%d",
            &year, &mon, &day, &hh, &mm, &ss);
@@ -562,9 +566,11 @@ bool simSyncTime()
       if (ntpResp.indexOf("+CNTP: 0") != -1)
       {
         String kstStr = simGetModemTime();
-        if (kstStr.isEmpty())
+        // CNTP 가 성공을 보고해도 모뎀 RTC 가 아직 2000-01-01 기본값이면 실패 처리.
+        // (LTE 등록 직후 모뎀 내부 RTC 반영 지연 발생 가능)
+        if (kstStr.isEmpty() || kstStr.startsWith("2000-01-01"))
         {
-          Serial.println("[SIM] CNTP ok but CCLK read failed");
+          Serial.println("[SIM] CNTP ok but CCLK still default — treating as fail");
           break;
         }
         return applyKSTTime(kstStr.c_str());
@@ -579,9 +585,9 @@ bool simSyncTime()
 
 void simConnect()
 {
-  // 1. NTP sync first — modem may auto-activate PDP for CNTP.
-  //    If the modem already has a valid RTC this still refreshes it.
-  bool timeOk = ntpSynced ? true : simSyncTime();
+  // 1. NTP sync — 모뎀은 TX 사이클마다 전원이 끊겼다가 켜지므로 내부 RTC 가 항상 리셋됨.
+  //    ntpSynced(RTC_DATA_ATTR) 가 true 여도 모뎀 RTC 는 무효 → 무조건 재동기화.
+  bool timeOk = simSyncTime();
 
   // 2. Read modem info (CCLK now reflects NTP-synced time when step 1 succeeded)
   SimInfo info = simGetInfo();
@@ -601,18 +607,10 @@ void simConnect()
                 timeOk    ? "OK" : "FAIL",
                 statusOk  ? "OK" : "FAIL",
                 settingOk ? "OK" : "FAIL");
-
-  // 5. RTC 드리프트 보정: Deep/Light Sleep 중 내부 RC 발진기(150kHz, ±5%) 사용으로
-  //    10분 슬립 시 최대 ±30초 오차 누적 가능.
-  //    HTTP 통신 성공 = 모뎀 LTE 등록됨 = 모뎀 RTC 가 네트워크 시간으로 확정됨.
-  //    correctRtcFromModem() 은 settimeofday() 만 수행하고 nextCaptureTime 은 변경 안 함.
-  //    applyKSTTime() 을 쓰면 nextCaptureTime 이 재계산되어 캡처 스케줄이 한 주기 밀림.
-  if (statusOk || settingOk)
-  {
-    String freshKst = simGetModemTime();   // AT+CCLK? 재독 (HTTP 이후 → LTE 시간 확정)
-    if (!freshKst.isEmpty())
-      correctRtcFromModem(freshKst.c_str());   // settimeofday() 만 수행, nextCaptureTime 불변
-  }
+  // NOTE: correctRtcFromModem() 제거.
+  //   NTP 성공 → simSyncTime() 내 applyKSTTime() 이 ESP32 RTC 를 이미 정확하게 설정.
+  //   NTP 실패 → 모뎀 CCLK=2000-01-01 → ESP32 RTC 에 쓰면 Deep Sleep 보존값을 파괴.
+  //   어느 경우도 POST/GET 이후 CCLK 재독이 도움이 되지 않으므로 제거.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
