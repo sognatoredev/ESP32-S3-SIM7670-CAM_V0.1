@@ -205,17 +205,17 @@ int csqToStrength(int csq)
 
 // Parse modem time and convert to KST (UTC+9)
 // AT+CCLK response: +CCLK: "YY/MM/DD,HH:MM:SS±ZZ"
-//   ZZ = UTC offset in quarter-hour units (+36 = UTC+9 = KST)
+//   ZZ = UTC offset in quarter-hour units
 //
 // ■ SIM7670G 실측 동작:
-//   AT+CCLK? 는 항상 UTC 시각을 반환하고, ±ZZ 는 망에서 받은 타임존 정보만 표시.
-//   예) +CCLK: "26/05/21,05:45:14+36"
-//       → UTC 05:45:14,  타임존 +36쿼터(= UTC+9 = KST)
-//       → KST = 05:45:14 + 36×15분 = 14:45:14
+//   AT+CNTP 의 tz 파라미터가 모뎀 내부 RTC 에 저장되는 시각을 결정한다.
+//     tz=0  → 모뎀이 UTC 로 저장 → CCLK 가 UTC 반환 (+00)
+//     tz=36 → 모뎀이 KST 로 저장 → CCLK 가 KST 반환 (+36)
 //
-//   ※ 이전 코드의 착오: "모뎀이 LOCAL 시각을 반환한다"고 가정하여
-//      diffMin = (36 - tzQuarters)×15 로 계산 → tzQuarters=36 이면 diffMin=0 (변환 없음).
-//      tzQuarters=0(타임존 미제공) 일 때만 우연히 +9h 가 적용되어 맞았던 것.
+//   simSyncTime() 에서 tz=0 을 사용하므로 CCLK 는 항상 UTC 를 반환.
+//   simGetModemTime() 은 UTC 에 +9h 를 더해 KST 를 산출.
+//
+//   ※ tz=36 을 사용하면 CCLK=KST 이고 여기서 또 +9h → KST+9h(=UTC+18h) 이중 변환 발생.
 String simGetModemTime()
 {
   String resp = simSendAT("AT+CCLK?", 3000);
@@ -547,7 +547,10 @@ bool simSyncTime()
   {
     Serial.printf("[SIM] CNTP: trying %s ...\n", ntpServers[s]);
 
-    String cfg = String("AT+CNTP=\"") + ntpServers[s] + "\",36";
+    // tz=0 (UTC): 모뎀 내부 RTC 를 UTC 로 저장.
+    // tz=36(KST) 을 사용하면 CCLK 가 KST 를 반환하는데 simGetModemTime() 이
+    // 거기에 +9h 를 추가하여 이중 변환(UTC+18h) 이 발생함.
+    String cfg = String("AT+CNTP=\"") + ntpServers[s] + "\",0";
     if (simSendAT(cfg, 5000).indexOf("OK") == -1)
     {
       Serial.println("[SIM] CNTP config failed, next server");
