@@ -7,6 +7,7 @@
 #include "led.h"
 #include "app_httpd.h"
 #include "time_sync.h"
+#include "ov5640_af.h"
 #include "esp_camera.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
@@ -109,6 +110,25 @@ static String performCapture()
     camera_fb_t *fl = esp_camera_fb_get();
     if (fl) esp_camera_fb_return(fl);
     delay(50);
+  }
+
+  // AF 트리거: 포커스를 잡은 후 캡처 (타임아웃 3초)
+  if (ov5640AfTriggerSingle() == 0)
+  {
+    bool focused = ov5640AfWaitFocus(3000);
+    if (!focused)
+    {
+      Serial.println("[CAP] AF timeout — shooting without focus lock");
+    }
+    else
+    {
+      // CAMERA_GRAB_LATEST 모드에서는 AF 탐색 중 VCM이 움직이는 동안
+      // 찍힌 블러 프레임이 버퍼에 남아 있을 수 있음.
+      // 포커스 완료 직후 구 프레임 1장 폐기 + VCM 렌즈 정착 대기.
+      camera_fb_t *fl = esp_camera_fb_get();
+      if (fl) esp_camera_fb_return(fl);
+      delay(50);
+    }
   }
 
   // Flash on → capture → flash off

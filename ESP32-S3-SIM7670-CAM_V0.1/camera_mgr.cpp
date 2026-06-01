@@ -1,6 +1,7 @@
 #include "camera_mgr.h"
 #include "board_config.h"
 #include "led.h"
+#include "ov5640_af.h"
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -104,10 +105,13 @@ bool cameraInit()
 #endif
 
   camera_sensor2 = esp_camera_sensor_get();
-  
+
   SetCameraFramesize(11);   // HD 1280x720 (streaming default)
 
   SetCameraMirror(0x06); // 2026.05.04 feat.CSH : 이미지 좌우 반전
+
+  // AF 펌웨어 로드 (OV5640 AF 모듈 전용 — 실패해도 카메라는 계속 동작)
+  ov5640AfInit();
 
   return true;
 }

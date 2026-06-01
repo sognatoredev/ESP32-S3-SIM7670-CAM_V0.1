@@ -4,6 +4,7 @@
 #include "image_capture.h"  // g_captureTarget
 #include "sd_storage.h"     // saveConfig
 #include "led.h"
+#include "ov5640_af.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "img_converters.h" // frame2jpg
@@ -424,6 +425,15 @@ void enterSetupMode()
   Serial.printf("[SETUP] AP SSID: %s  IP: %s\n", SETUP_AP_SSID, ip.toString().c_str());
 
   startSetupHttpd();
+
+  // 세팅모드 진입 시 연속 AF(CAF) 시작.
+  // 8051 MCU가 백그라운드에서 계속 포커스를 조절하므로
+  // 미리보기(/capture) 프레임이 항상 초점이 맞은 상태로 표시됨.
+  // 세팅모드 종료 후 운영모드의 performCapture() 가 SAF로 자동 전환함.
+  if (ov5640AfTriggerContinuous() == 0)
+    Serial.println("[SETUP] AF continuous mode started");
+  else
+    Serial.println("[SETUP] AF continuous mode skipped (no AF module)");
 
   ledSet(255, 165, 0);   // orange: setup mode
 }
