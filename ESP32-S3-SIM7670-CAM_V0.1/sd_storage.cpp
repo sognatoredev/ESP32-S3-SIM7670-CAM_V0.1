@@ -4,6 +4,8 @@
 #include "image_capture.h"
 #include "time_sync.h"
 #include "sim_modem.h"
+#include "camera_mgr.h"    // g_savedFocusPos
+#include "led.h"            // g_flashBrightness, g_flashMask
 #include "SD_MMC.h"
 #include <Arduino.h>
 
@@ -148,12 +150,29 @@ void loadConfig()
       g_captureTarget = v;
       loaded++;
     }
+    else if (key == "focus_pos" && v >= FOCUS_POS_UNSET && v <= 1023)
+    {
+      g_savedFocusPos = v;
+      loaded++;
+    }
+    else if (key == "flash_bright" && v >= 0 && v <= 100)
+    {
+      g_flashBrightness = v;
+      loaded++;
+    }
+    else if (key == "flash_mask" && v >= 0 && v <= 255)
+    {
+      g_flashMask = (uint8_t)v;
+      loaded++;
+    }
     // unknown keys are silently ignored
   }
   f.close();
 
-  Serial.printf("[CFG] Loaded %d setting(s) — intv=%d min  cnt=%d\n",
-                loaded, g_captureIntervalMin, g_captureTarget);
+  Serial.printf("[CFG] Loaded %d setting(s) — intv=%d  cnt=%d  focus=%d"
+                "  flash_bright=%d  flash_mask=0x%02X\n",
+                loaded, g_captureIntervalMin, g_captureTarget, g_savedFocusPos,
+                g_flashBrightness, g_flashMask);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,8 +218,11 @@ static size_t writeConfigContent(File &f)
   // ── Settings section (machine-readable) ──────────────────────────────────
   // 이 줄들의 실제 쓰기 성공 여부를 반환값으로 전달.
   size_t sw = 0;
-  sw += f.printf("intv=%d\n", g_captureIntervalMin);
-  sw += f.printf("cnt=%d\n",  g_captureTarget);
+  sw += f.printf("intv=%d\n",         g_captureIntervalMin);
+  sw += f.printf("cnt=%d\n",          g_captureTarget);
+  sw += f.printf("focus_pos=%d\n",     g_savedFocusPos);
+  sw += f.printf("flash_bright=%d\n", g_flashBrightness);
+  sw += f.printf("flash_mask=%d\n",   (int)g_flashMask);
   return sw;
 }
 

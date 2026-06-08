@@ -6,6 +6,10 @@
 static CRGB leds[WS2812_NUM];               // GPIO38 — 상태 표시 (1개)
 static CRGB flashLeds[WS2812_FLASH_NUM];    // GPIO1  — 플래시 (8개)
 
+// 캡처 플래시 영구 설정 — Deep Sleep 복귀 후에도 보존
+RTC_DATA_ATTR int     g_flashBrightness = 100;   // 0–100 %
+RTC_DATA_ATTR uint8_t g_flashMask       = 0xFF;  // 기본: 8개 전부 켜기
+
 void ledInit()
 {
   // 상태 LED (GPIO38) 와 플래시 LED (GPIO1) 를 FastLED 에 등록.
@@ -36,4 +40,12 @@ void flashLedSet(uint8_t r, uint8_t g, uint8_t b)
 {
   fill_solid(flashLeds, WS2812_FLASH_NUM, CRGB(r, g, b));
   FastLED.show();   // 상태 LED 는 현재 값 유지
+}
+
+void flashLedSetMask(uint8_t mask, uint8_t r, uint8_t g, uint8_t b)
+{
+  for (int i = 0; i < WS2812_FLASH_NUM; i++) {
+    flashLeds[i] = (mask & (1 << i)) ? CRGB(r, g, b) : CRGB(0, 0, 0);
+  }
+  FastLED.show();
 }

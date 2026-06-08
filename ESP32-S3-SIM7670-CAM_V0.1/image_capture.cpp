@@ -8,6 +8,7 @@
 #include "app_httpd.h"
 #include "time_sync.h"
 #include "ov5640_af.h"
+#include "setup_server.h"  // g_setupMode (세팅모드 여부 확인)
 #include "esp_camera.h"
 #include "SD_MMC.h"
 #include <Arduino.h>
@@ -112,28 +113,49 @@ static String performCapture()
     delay(50);
   }
 
-  // AF 트리거: 포커스를 잡은 후 캡처 (타임아웃 3초)
-  if (ov5640AfTriggerSingle() == 0)
+  // ── 포커스 적용 ───────────────────────────────────────────────────────────
+  // 저장된 VCM 위치(g_savedFocusPos)가 있으면 해당 위치로 직접 이동.
+  //   → AF 탐색 없이 ~180ms 만에 고정 초점 재현 (빠르고 안정적).
+  // 저장값이 없으면 SAF 자동 실행 (3초 타임아웃).
+  if (g_savedFocusPos >= 0)
   {
-    bool focused = ov5640AfWaitFocus(3000);
-    if (!focused)
+    // 저장된 VCM 위치 적용 (MCU PAUSE + 렌즈 이동 + 안정화 포함)
+    cameraApplyFocusPos(g_savedFocusPos);
+    // 렌즈 정착 후 구 프레임 1장 폐기
+    camera_fb_t *fl = esp_camera_fb_get();
+    if (fl) esp_camera_fb_return(fl);
+    Serial.printf("[CAP] Focus: saved VCM=%d\n", g_savedFocusPos);
+  }
+  else
+  {
+    // 저장된 포커스 없음 → SAF 자동 실행
+    if (ov5640AfTriggerSingle() == 0)
     {
-      Serial.println("[CAP] AF timeout — shooting without focus lock");
-    }
-    else
-    {
-      // CAMERA_GRAB_LATEST 모드에서는 AF 탐색 중 VCM이 움직이는 동안
-      // 찍힌 블러 프레임이 버퍼에 남아 있을 수 있음.
-      // 포커스 완료 직후 구 프레임 1장 폐기 + VCM 렌즈 정착 대기.
-      camera_fb_t *fl = esp_camera_fb_get();
-      if (fl) esp_camera_fb_return(fl);
-      delay(50);
+      bool focused = ov5640AfWaitFocus(3000);
+      if (!focused)
+      {
+        Serial.println("[CAP] AF timeout — shooting without focus lock");
+      }
+      else
+      {
+        // CAMERA_GRAB_LATEST 모드에서는 AF 탐색 중 VCM이 움직이는 동안
+        // 찍힌 블러 프레임이 버퍼에 남아 있을 수 있음.
+        // 포커스 완료 직후 구 프레임 1장 폐기 + VCM 렌즈 정착 대기.
+        camera_fb_t *fl = esp_camera_fb_get();
+        if (fl) esp_camera_fb_return(fl);
+        delay(50);
+      }
     }
   }
 
   // Flash on → capture → flash off
-  ledSet(255, 255, 255);
-  flashLedSet(255, 255, 255);
+  // 세팅모드에서 저장한 밝기(g_flashBrightness) 와 채널 마스크(g_flashMask) 사용.
+  // 기본값: 100 % / 0xFF (8개 전부) — 세팅모드 미진입 시에도 동일하게 동작.
+  {
+    uint8_t fv = (uint8_t)((uint32_t)g_flashBrightness * 255 / 100);
+    ledSet(255, 255, 255);
+    flashLedSetMask(g_flashMask, fv, fv, fv);
+  }
   delay(200);
   camera_fb_t *fb = esp_camera_fb_get();
   flashLedSet(0, 0, 0);

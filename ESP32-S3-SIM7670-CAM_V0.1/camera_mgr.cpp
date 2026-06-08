@@ -10,6 +10,9 @@ int           current_cam_quality;
 sensor_t     *camera_sensor2 = NULL;
 volatile bool capturePending = false;
 
+// ── 포커스 저장 상태 ──────────────────────────────────────────────────────
+RTC_DATA_ATTR int g_savedFocusPos = FOCUS_POS_UNSET;  // -1 = 자동 SAF 사용
+
 bool cameraInit()
 {
   camera_config_t config;
@@ -142,7 +145,68 @@ void SetCameraQuality(int quality)
 void SetCameraMirror(int enable)
 {
   Serial.println("[CAM] Set Mirror Enable.");
-
   camera_sensor2->set_hmirror(camera_sensor2, enable);
   Serial.printf("[CAM] Mirror Enable/Disable -> %d\n", enable);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 포커스 저장 구현
+//
+// OV5640 VCM(Voice Coil Motor) 레지스터:
+//   0x3602[5:4] = slew rate  (00=slow / 10=fast)
+//   0x3602[1:0] = pos[9:8]   (MSB 2비트)
+//   0x3603[7:0] = pos[7:0]   (LSB 8비트)
+//   pos 범위: 0(무한대) ~ ~1023(접사)
+//
+// 동작 흐름:
+//   세팅모드  : cameraDoSingleAF()  — SAF + 완료 대기 → VCM 위치 읽기
+//              cameraApplyFocusPos() — 수동 +/- 조절
+//              저장 버튼           → g_savedFocusPos = cameraGetVcmPos()
+//   운영모드  : g_savedFocusPos >= 0 → cameraApplyFocusPos(g_savedFocusPos) 로
+//              AF 탐색 없이 즉시 동일 초점 재현 (빠름).
+//              g_savedFocusPos == -1 → 기존 SAF 자동 실행.
+// ─────────────────────────────────────────────────────────────────────────────
+
+int cameraGetVcmPos()
+{
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return -1;
+  uint8_t r2 = (uint8_t)s->get_reg(s, 0x3602, 0xFF);
+  uint8_t r3 = (uint8_t)s->get_reg(s, 0x3603, 0xFF);
+  return ((r2 & 0x03) << 8) | r3;
+}
+
+void cameraApplyFocusPos(int pos)
+{
+  if (pos < 0)    pos = 0;
+  if (pos > 1023) pos = 1023;
+
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return;
+
+  // 8051 MCU 정지 — MCU 가 VCM 값을 덮어쓰지 않도록 PAUSE 명령 전송
+  s->set_reg(s, 0x3022, 0xFF, 0x08);   // CMD_MAIN = PAUSE(0x08)
+  delay(60);
+
+  // VCM 위치 기록 (slew rate = fast : 0x20)
+  s->set_reg(s, 0x3602, 0xFF, 0x20 | ((pos >> 8) & 0x03));
+  s->set_reg(s, 0x3603, 0xFF,  pos & 0xFF);
+  delay(120);   // VCM 렌즈 물리적 이동 + 안정화 대기
+
+  Serial.printf("[FOCUS] VCM pos → %d\n", pos);
+}
+
+int cameraDoSingleAF(uint32_t timeoutMs)
+{
+  if (ov5640AfTriggerSingle() != 0) {
+    Serial.println("[FOCUS] SAF trigger failed");
+    return -1;
+  }
+  bool ok  = ov5640AfWaitFocus(timeoutMs);
+  int  pos = cameraGetVcmPos();
+  if (!ok)
+    Serial.printf("[FOCUS] SAF timeout — VCM=%d\n", pos);
+  else
+    Serial.printf("[FOCUS] SAF done — VCM=%d\n", pos);
+  return pos;   // 타임아웃이어도 현재 위치 반환 (사용자가 판단)
 }

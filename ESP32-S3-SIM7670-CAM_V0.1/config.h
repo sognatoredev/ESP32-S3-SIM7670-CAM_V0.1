@@ -33,7 +33,7 @@
 #define SERVER_HOST         "dev.neverlosewater.com"
 #define SERVER_PORT         49152
 #define DEVICE_MODEL_PREFIX "SM2-V3A"
-#define DEVICE_UNIT_CODE    "6002"
+#define DEVICE_UNIT_CODE    "6001"
 #define DEVICE_SERIAL_NO    DEVICE_MODEL_PREFIX "-" DEVICE_UNIT_CODE
 #define DEVICE_SW_VER       "0108"
 // Boundary must be long enough that it cannot appear by chance in JPEG binary data.
