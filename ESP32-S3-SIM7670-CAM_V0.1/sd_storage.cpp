@@ -16,6 +16,8 @@ bool saveConfig();
 
 bool sdReady = false;
 
+RTC_DATA_ATTR char g_deviceUnitCode[16] = DEVICE_UNIT_CODE_DEFAULT;
+
 bool sdSetup()
 {
   SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN);
@@ -155,6 +157,11 @@ void loadConfig()
       g_savedFocusPos = v;
       loaded++;
     }
+    else if (key == "sn" && val.length() > 0 && val.length() < sizeof(g_deviceUnitCode))
+    {
+      val.toCharArray(g_deviceUnitCode, sizeof(g_deviceUnitCode));
+      loaded++;
+    }
     else if (key == "flash_bright" && v >= 0 && v <= 100)
     {
       g_flashBrightness = v;
@@ -170,9 +177,9 @@ void loadConfig()
   f.close();
 
   Serial.printf("[CFG] Loaded %d setting(s) — intv=%d  cnt=%d  focus=%d"
-                "  flash_bright=%d  flash_mask=0x%02X\n",
+                "  flash_bright=%d  flash_mask=0x%02X  sn=%s\n",
                 loaded, g_captureIntervalMin, g_captureTarget, g_savedFocusPos,
-                g_flashBrightness, g_flashMask);
+                g_flashBrightness, g_flashMask, g_deviceUnitCode);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +201,7 @@ static size_t writeConfigContent(File &f)
   f.println(" Device Info  (auto-generated — do not edit)");
   f.println("**************************************************");
   f.printf (" Model Prefix    : %s\n",      DEVICE_MODEL_PREFIX);
-  f.printf (" Serial Number   : %s\n",      DEVICE_UNIT_CODE);
+  f.printf (" Serial Number   : %s\n",      g_deviceUnitCode);
   f.printf (" FW Build Date   : %s %s\n",   __DATE__, __TIME__);
   f.printf (" Server Host     : %s\n",      SERVER_HOST);
   f.printf (" Server Port     : %d\n",      SERVER_PORT);
@@ -223,6 +230,7 @@ static size_t writeConfigContent(File &f)
   sw += f.printf("focus_pos=%d\n",     g_savedFocusPos);
   sw += f.printf("flash_bright=%d\n", g_flashBrightness);
   sw += f.printf("flash_mask=%d\n",   (int)g_flashMask);
+  sw += f.printf("sn=%s\n",           g_deviceUnitCode);
   return sw;
 }
 

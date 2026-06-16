@@ -500,7 +500,7 @@ bool simPostDeviceStatus(const SimInfo &info)
     "&SINR=%d"
     "&Device_SW_Ver=%s",
     SERVER_HOST, SERVER_PORT,
-    DEVICE_MODEL_PREFIX, DEVICE_UNIT_CODE,
+    DEVICE_MODEL_PREFIX, g_deviceUnitCode,
     g_batteryPercent,
     DEVICE_TEMPERATURE,
     year, mon, day, hh, mm, ss,
@@ -515,7 +515,7 @@ bool simPostDeviceStatus(const SimInfo &info)
 bool simGetDeviceSetting()
 {
   String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT
-             + "/m2/device_setting?serial_no=" + DEVICE_SERIAL_NO;
+             + "/m2/device_setting?serial_no=" + deviceSerialNo();
 
   Serial.println("[SIM] GET device_setting");
 

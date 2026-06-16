@@ -56,7 +56,7 @@ bool sendFileViaSim(const String &filePath)
   size_t bodySize = hdr2.length() + hdr3.length() + fileSize + closing.length();
 
   // Hdr1: HTTP request line + HTTP headers (order matches reference firmware log)
-  String hdr1 = String("POST /m2/point_image?serial_no=") + DEVICE_SERIAL_NO
+  String hdr1 = String("POST /m2/point_image?serial_no=") + deviceSerialNo()
               + " HTTP/1.1\r\n"
               + "Host: " + SERVER_HOST + "\r\n"
               + "Connection: close\r\n"

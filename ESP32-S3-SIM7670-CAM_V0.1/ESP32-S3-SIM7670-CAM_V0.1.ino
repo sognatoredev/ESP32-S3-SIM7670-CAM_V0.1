@@ -207,7 +207,7 @@ static void handleGetCmd(const String &field)
   if (field.equalsIgnoreCase("Model Prefix"))
     Serial.printf("[GET] Model Prefix     : %s\n",        DEVICE_MODEL_PREFIX);
   else if (field.equalsIgnoreCase("Serial Number"))
-    Serial.printf("[GET] Serial Number    : %s\n",        DEVICE_UNIT_CODE);
+    Serial.printf("[GET] Serial Number    : %s\n",        g_deviceUnitCode);
   else if (field.equalsIgnoreCase("FW Build Date"))
     Serial.printf("[GET] FW Build Date    : %s %s\n",     __DATE__, __TIME__);
   else if (field.equalsIgnoreCase("Server Host"))
@@ -271,6 +271,7 @@ static void handleGetCmd(const String &field)
 //   "get <field>"  — print a device/config value
 //   "set intv <n>" — set capture interval in minutes
 //   "set cnt  <n>" — set captures before TX
+//   "set sn  <c>"  — set serial number unit code (e.g. "set sn 9032")
 //   "sim on"       — power on  SIM7670G modem (PWRKEY pulse) and re-init
 //   "sim off"      — power off SIM7670G modem (PWRKEY pulse)
 //   "remove sd"    — delete all files on the SD card
@@ -376,6 +377,21 @@ static void handleSerialCmd(const String &cmd)
       Serial.println("[SET] cnt: value must be 1–100");
     }
   }
+  else if (cmd.startsWith("set sn "))
+  {
+    String val = cmd.substring(7);
+    val.trim();
+    if (val.length() > 0 && val.length() < sizeof(g_deviceUnitCode))
+    {
+      val.toCharArray(g_deviceUnitCode, sizeof(g_deviceUnitCode));
+      Serial.printf("[SET] Serial number = %s-%s\n", DEVICE_MODEL_PREFIX, g_deviceUnitCode);
+      saveConfig();
+    }
+    else
+    {
+      Serial.printf("[SET] sn: value must be 1–%d characters\n", (int)sizeof(g_deviceUnitCode) - 1);
+    }
+  }
   else if (cmd == "bat init")
   {
     Serial.println("[CMD] Re-running batteryInit()...");
@@ -407,6 +423,7 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  get help            — list all gettable fields");
     Serial.println("  set intv <n>        — capture interval in minutes (1–1440, default 10)");
     Serial.println("  set cnt  <n>        — captures before TX (1–100, default 1)");
+    Serial.println("  set sn   <code>     — set serial number unit code (e.g. \"set sn 9032\")");
     Serial.println("  sim on              — power on modem (PWRKEY) and re-init");
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");

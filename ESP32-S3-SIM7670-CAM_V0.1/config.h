@@ -1,4 +1,5 @@
 #pragma once
+#include <Arduino.h>
 
 // ===========================
 // WiFi
@@ -33,9 +34,14 @@
 #define SERVER_HOST         "dev.neverlosewater.com"
 #define SERVER_PORT         49152
 #define DEVICE_MODEL_PREFIX "SM2-V3A"
-#define DEVICE_UNIT_CODE    "6001"
-#define DEVICE_SERIAL_NO    DEVICE_MODEL_PREFIX "-" DEVICE_UNIT_CODE
+#define DEVICE_UNIT_CODE_DEFAULT  "6001"   // "set sn <code>" 로 변경 가능한 기본값
 #define DEVICE_SW_VER       "0108"
+
+// 런타임 시리얼 넘버 (기본값 = DEVICE_UNIT_CODE_DEFAULT, config.txt "sn=" 키로 복원)
+// RTC_DATA_ATTR — Deep Sleep 복귀 후에도 유지. 정의는 sd_storage.cpp.
+extern char g_deviceUnitCode[16];
+
+inline String deviceSerialNo() { return String(DEVICE_MODEL_PREFIX) + "-" + g_deviceUnitCode; }
 // Boundary must be long enough that it cannot appear by chance in JPEG binary data.
 // 8-char boundary ("1818FFFF") is too short — a 79 KB JPEG can contain \r\n--1818FFFF
 // as an accidental byte sequence, causing the server multipart parser to truncate the
