@@ -220,9 +220,9 @@ bool sendWithRetry(const String &rtuPath)
 
     if (attempt < 3)
     {
-      Serial.printf("[TX] Failed (%d/3), retry in 10 s\n", attempt);
+      Serial.printf("[TX] Failed (%d/3), retry in 5 s\n", attempt);
       ledBlink(255, 80, 0, 2, 300);   // orange: retrying
-      delay(10000);   // give modem time to fully settle before next HTTPINIT
+      delay(5000);    // sendFileViaSim 내부에서 CIPCLOSE+NETCLOSE 이미 완료, PDP 안정화만 대기
     }
   }
 
