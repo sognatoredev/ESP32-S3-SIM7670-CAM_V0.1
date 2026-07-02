@@ -21,7 +21,7 @@
 #define SIM_TX_PIN      18
 #define SIM_PWRKEY_PIN  21    // PWRKEY: LOW pulse to power on/off
 #define SIM_BAUD_INIT   115200   // default power-on baud rate
-#define SIM_BAUD_FAST   115200   // upgraded rate set via AT+IPR every boot
+#define SIM_BAUD_FAST   230400   // upgraded rate set via AT+IPR every boot
 
 // PWRKEY pulse durations (ms)
 #define SIM_PWRON_PULSE_MS   1200   // > 1 s to power on

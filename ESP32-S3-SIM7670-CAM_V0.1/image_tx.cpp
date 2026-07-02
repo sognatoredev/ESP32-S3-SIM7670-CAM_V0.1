@@ -111,6 +111,11 @@ bool sendFileViaSim(const String &filePath)
       // This replaces the old fixed delay(10/50) — adapts to actual LTE uplink speed
       // and prevents the ~6 KB modem TCP send buffer from overflowing mid-transfer.
       simTcpWaitAck(0, 4096, 5000);
+      // 모뎀 AT 파서 안정화 대기: 230400 baud 이상에서 CIPSEND 간 자연 지연이
+      // 줄어들어 모뎀이 이전 TCP 처리를 완료하기 전에 다음 명령이 도착 → ERROR.
+      // 115200 에서는 UART 전송 시간(~130ms/청크)이 암묵적 지연 역할을 했음.
+      // 30ms 에서 7번째 CIPSEND 실패 확인 → 80ms 로 상향 (115200 자연 간격에 근접).
+      delay(80);
     }
     bytesSent += rd;
 
