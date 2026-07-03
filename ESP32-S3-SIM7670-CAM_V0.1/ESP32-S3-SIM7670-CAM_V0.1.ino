@@ -12,6 +12,11 @@
 #include <time.h>
 #include "esp_sleep.h"   // Deep Sleep / Wake-up API
 
+// Deep Sleep Wake 경로(setup())에서 이번 부팅에 이미 캡처를 수행했는지 여부.
+// loop() 스케줄러가 같은 경계를 다시 소화해 중복 캡처하는 것을 막는 1회성 가드.
+// RTC_DATA_ATTR 아님 — 이번 부팅 세션 안에서만 유효하면 되므로 매 부팅 시 false 로 초기화됨.
+static bool g_capturedThisBoot = false;
+
 void setup()
 {
   // ── Deep Sleep 복귀 여부 판별 (Serial.begin 전에 확인) ──────────────────
@@ -129,6 +134,11 @@ void setup()
     // ── 1순위: 이미지 캡처 ───────────────────────────────────────────────
     String capturedPath = captureAndSaveToSD();
 
+    // 이번 부팅에서 캡처를 수행했음을 표시 — loop() 스케줄러가 같은 경계를
+    // 다시 소화해 중복 캡처하는 것을 막는 1회성 가드 (아래 nextCaptureTime
+    // 재계산과 함께 이중 방어; 상세 이유는 g_capturedThisBoot 선언부 참고).
+    g_capturedThisBoot = true;
+
     if (isTxWake)
     {
       // ── TX 경계: SIM 초기화 ──────────────────────────────────────────────
@@ -148,10 +158,21 @@ void setup()
         ledBlink(255, 80, 0, 5, 300);   // orange x5: modem fail
         Serial.println("[SIM] Init failed");
       }
+
+      // TX 경계: 이미지 전송 (fail-fast: 실패 시 retryPendingFiles 건너뜀)
+      // nextCaptureTime 재계산보다 반드시 먼저 실행해야 함 — 전송(수십 초~수 분)
+      // 도중 실제 시각이 예약 경계를 넘어가면, 전송 전에 계산한 nextCaptureTime 이
+      // 과거 값으로 남아 loop() 진입 즉시 재캡처가 발동하는 버그가 있었음.
+      txAfterWake(capturedPath, scheduledCaptureTime);
+    }
+    else
+    {
+      // 비TX 경계: 이미지 저장 완료 — loop() 에서 즉시 Deep Sleep 진입
+      Serial.println("[SYS] Capture-only wake complete — proceeding to sleep");
     }
 
-    // 다음 캡처 경계 계산.
-    // TX Wake: simInit() 내 RTC 보정 후 정확한 시각 기준.
+    // 다음 캡처 경계 계산 — 반드시 전송(txAfterWake) 완료 "이후"에 수행.
+    // TX Wake: 전송이 끝난 시점의 정확한 시각 기준이므로 항상 미래 값 보장.
     // 비TX Wake: 드리프트된 RTC 기준이지만 분 단위 오차이므로 허용 범위.
     nextCaptureTime = calcNextBoundary();
     {
@@ -159,17 +180,6 @@ void setup()
       localtime_r(&nextCaptureTime, &nextTm);
       Serial.printf("[CAP] Next capture: %02d:%02d:00 KST\n",
                     nextTm.tm_hour, nextTm.tm_min);
-    }
-
-    if (isTxWake)
-    {
-      // TX 경계: 이미지 전송 (fail-fast: 실패 시 retryPendingFiles 건너뜀)
-      txAfterWake(capturedPath, scheduledCaptureTime);
-    }
-    else
-    {
-      // 비TX 경계: 이미지 저장 완료 — loop() 에서 즉시 Deep Sleep 진입
-      Serial.println("[SYS] Capture-only wake complete — proceeding to sleep");
     }
 
     ledSet(0, 40, 0);   // green: 완료
@@ -532,7 +542,15 @@ void loop()
     time_t now;
     time(&now);
 
-    if (now >= nextCaptureTime)
+    if (g_capturedThisBoot)
+    {
+      // Deep Sleep Wake 직후 setup() 에서 이미 이번 경계의 캡처를 수행했음
+      // (nextCaptureTime 도 setup() 에서 전송 완료 후 이미 정확히 갱신됨).
+      // loop() 진입 첫 스케줄러 통과에서 1회성으로 소비하고 건너뜀 — 조건과
+      // 무관하게 항상 리셋해야 다음 정상 스케줄까지 캡처가 막히지 않음.
+      g_capturedThisBoot = false;
+    }
+    else if (now >= nextCaptureTime)
     {
       captureAndSave();
 
