@@ -148,7 +148,7 @@ static String performCapture()
     }
   }
 
-  // Flash on → capture → flash off
+  // Flash on → AEC/AGC 재수렴 대기(워밍업) → capture → flash off
   // 세팅모드에서 저장한 밝기(g_flashBrightness) 와 채널 마스크(g_flashMask) 사용.
   // 기본값: 100 % / 0xFF (8개 전부) — 세팅모드 미진입 시에도 동일하게 동작.
   {
@@ -156,8 +156,19 @@ static String performCapture()
     ledSet(255, 255, 255);
     flashLedSetMask(g_flashMask, fv, fv, fv);
   }
-  delay(200);
-  camera_fb_t *fb = esp_camera_fb_get();
+  delay(50);   // 플래시 LED 물리적 밝기 안정화
+
+  // 플래시 켜지기 전(어두운 함체 내부)까지 센서의 AEC/AGC 는 "어둠 기준"
+  // 최대 게인/긴 노출시간으로 수렴해 있음. 이 상태로 바로 촬영하면 플래시의
+  // 강한 빛이 과다노출(클리핑)되어 사진 전체가 뿌옇게 washed-out 되는 현상이
+  // 확인됨. 프레임을 실제로 읽어 버리는 워밍업 루프로 AEC/AGC 가 "플래시 밝기
+  // 기준"으로 재수렴할 시간을 확보한 뒤 마지막 프레임을 실촬영으로 사용.
+  for (int i = 0; i < 4; i++)
+  {
+    camera_fb_t *warm = esp_camera_fb_get();
+    if (warm) esp_camera_fb_return(warm);
+  }
+  camera_fb_t *fb = esp_camera_fb_get();   // AEC/AGC 가 플래시 밝기에 수렴된 상태의 실촬영
   flashLedSet(0, 0, 0);
   ledSet(0, 40, 0);
 
