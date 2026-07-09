@@ -17,6 +17,7 @@ bool saveConfig();
 bool sdReady = false;
 
 RTC_DATA_ATTR char g_deviceUnitCode[16] = DEVICE_UNIT_CODE_DEFAULT;
+RTC_DATA_ATTR char g_apName[33]         = SETUP_AP_SSID;
 
 bool sdSetup()
 {
@@ -162,6 +163,12 @@ void loadConfig()
       val.toCharArray(g_deviceUnitCode, sizeof(g_deviceUnitCode));
       loaded++;
     }
+    else if (key == "ap_name" && val.length() > 0 && val.length() < sizeof(g_apName) &&
+             isValidApName(val.c_str(), val.length()))
+    {
+      val.toCharArray(g_apName, sizeof(g_apName));
+      loaded++;
+    }
     else if (key == "flash_bright" && v >= 0 && v <= 100)
     {
       g_flashBrightness = v;
@@ -177,9 +184,9 @@ void loadConfig()
   f.close();
 
   Serial.printf("[CFG] Loaded %d setting(s) — intv=%d  cnt=%d  focus=%d"
-                "  flash_bright=%d  flash_mask=0x%02X  sn=%s\n",
+                "  flash_bright=%d  flash_mask=0x%02X  sn=%s  ap_name=%s\n",
                 loaded, g_captureIntervalMin, g_captureTarget, g_savedFocusPos,
-                g_flashBrightness, g_flashMask, g_deviceUnitCode);
+                g_flashBrightness, g_flashMask, g_deviceUnitCode, g_apName);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +220,7 @@ static size_t writeConfigContent(File &f)
   f.printf (" m2_device_id    : %d\n",      g_m2DeviceId);
   f.printf (" Battery         : %d%%\n",    g_batteryPercent);
   f.printf (" Sim Baud Rate   : %d bps\n",  SIM_BAUD_FAST);
+  f.printf (" AP Name         : %s\n",      g_apName);
   f.println(" Mesure_Mode     : -");
   if (g_lastCaptureWidth > 0)
     f.printf(" Image Resolution: %d x %d\n", g_lastCaptureWidth, g_lastCaptureHeight);
@@ -231,6 +239,7 @@ static size_t writeConfigContent(File &f)
   sw += f.printf("flash_bright=%d\n", g_flashBrightness);
   sw += f.printf("flash_mask=%d\n",   (int)g_flashMask);
   sw += f.printf("sn=%s\n",           g_deviceUnitCode);
+  sw += f.printf("ap_name=%s\n",      g_apName);
   return sw;
 }
 

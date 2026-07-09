@@ -78,5 +78,26 @@ inline String deviceSerialNo() { return String(DEVICE_MODEL_PREFIX) + "-" + g_de
 // ===========================
 // Setup AP mode
 // ===========================
-#define SETUP_AP_SSID        "WP_Test_01"
+#define SETUP_AP_SSID        "WP_Test_01"   // g_apName 초기 기본값 (config.txt "ap_name=" 로 변경 가능)
 #define SETUP_AP_TIMEOUT_MS  (5UL * 60UL * 1000UL)   // 5분
+
+// 런타임 AP 이름 (기본값 = SETUP_AP_SSID, config.txt "ap_name=" 키로 복원)
+// RTC_DATA_ATTR — Deep Sleep 복귀 후에도 유지. 정의는 sd_storage.cpp.
+// 변경은 다음 세팅모드 진입 시점부터 적용됨 (현재 접속 중인 AP 세션을 끊지 않기 위함).
+extern char g_apName[33];   // 32자(802.11 SSID 최대 길이) + null
+
+// AP 이름 허용 문자: 영문 대소문자 / 숫자 / - / _ 만 허용.
+// (공백·한글 등은 URL 인코딩 디코딩이 필요해 제외 — 웹/시리얼 양쪽에서 공용으로 사용)
+inline bool isValidApNameChar(char c)
+{
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+         (c >= '0' && c <= '9') || c == '-' || c == '_';
+}
+
+inline bool isValidApName(const char *s, size_t len)
+{
+  if (len == 0) return false;
+  for (size_t i = 0; i < len; i++)
+    if (!isValidApNameChar(s[i])) return false;
+  return true;
+}

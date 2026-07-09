@@ -175,6 +175,21 @@ static const char HTML_TEMPLATE[] =
   "</div>"
   "</div>"
 
+  // ── AP 이름(Wi-Fi SSID) 변경 ──
+  "<div class=\"card\">"
+  "<h3>AP 이름 (Wi-Fi SSID)</h3>"
+  "<div class=\"row\">"
+    "<input type=\"text\" id=\"apname\" maxlength=\"32\""
+           " style=\"flex:1;padding:7px;background:#0d1117;border:1px solid #30363d;"
+                    "border-radius:4px;color:#c9d1d9;font-size:15px\""
+           " placeholder=\"영문/숫자/-/_ 만 허용\">"
+  "</div>"
+  "<button class=\"btn btn-save\" onclick=\"saveApName()\">AP 이름 저장</button>"
+  "<div id=\"apmsg\" style=\"text-align:center;font-size:13px;color:#8b949e;"
+                            "margin-top:8px;min-height:18px\">"
+    "저장 시 다음 세팅모드 진입부터 적용됩니다 (지금 접속은 유지됨)</div>"
+  "</div>"
+
   "<button class=\"btn btn-start\" onclick=\"startOp()\">운영 시작</button>"
   "<div id=\"msg\"></div>"
 
@@ -200,6 +215,7 @@ static const char HTML_TEMPLATE[] =
       "document.getElementById('l'+i).checked=!!(d.m&(1<<i));"
     "document.getElementById('fpos_saved').textContent=d.fp>=0?'VCM='+d.fp:'자동 AF';"
     "document.getElementById('fpos_cur').textContent=d.vp;"
+    "document.getElementById('apname').value=d.ap;"
   "}).catch(function(){});"
   // 밝기
   "function onBright(v){"
@@ -283,6 +299,18 @@ static const char HTML_TEMPLATE[] =
       "body:'intv='+intv+'&cnt='+cnt})"
     ".then(function(r){return r.text();})"
     ".then(function(t){msg.textContent='저장됨: '+t;})"
+    ".catch(function(){msg.textContent='저장 실패';});"
+  "}"
+  // AP 이름 저장
+  "function saveApName(){"
+    "var v=document.getElementById('apname').value;"
+    "var msg=document.getElementById('apmsg');"
+    "msg.textContent='저장 중...';"
+    "fetch('/set_ap',{method:'POST',"
+      "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+      "body:'ap='+encodeURIComponent(v)})"
+    ".then(function(r){return r.text();})"
+    ".then(function(t){msg.textContent=t;})"
     ".catch(function(){msg.textContent='저장 실패';});"
   "}"
   // 운영 시작
@@ -442,6 +470,72 @@ static esp_err_t set_handler(httpd_req_t *req)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /set_ap  — AP 이름(Wi-Fi SSID) 저장
+//   body: ap=<name>  (application/x-www-form-urlencoded, encodeURIComponent 적용됨)
+//   허용 문자: 영문/숫자/-/_ 만 (isValidApName). 그 외 문자는 encodeURIComponent 가
+//   %XX 로 치환하므로 '%' 자체가 charset 검증에 걸려 자동으로 거부됨 — 별도 URL
+//   디코딩 불필요.
+//   변경은 즉시 반영되지 않고 config.txt 에만 저장 — 다음 세팅모드 진입
+//   (enterSetupMode() 의 WiFi.softAP() 호출) 시점부터 적용됨. 지금 접속 중인
+//   AP 세션을 끊지 않기 위한 설계.
+// ─────────────────────────────────────────────────────────────────────────────
+static esp_err_t set_ap_handler(httpd_req_t *req)
+{
+  int total = (int)req->content_len;
+  if (total <= 0 || total > 48) {
+    Serial.printf("[SETUP] /set_ap bad content_len=%d\n", total);
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  char body[50] = {0};
+  int  offset   = 0;
+  while (offset < total) {
+    int n = httpd_req_recv(req, body + offset, total - offset);
+    if (n <= 0) {
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    offset += n;
+  }
+  body[offset] = '\0';
+
+  Serial.printf("[SETUP] /set_ap body: \"%s\"\n", body);
+
+  // "ap=" 뒤부터 '&' 전까지 추출 (최대 32자)
+  const char *key = "ap=";
+  char       *p   = strstr(body, key);
+  char        newName[33] = {0};
+  int         nlen = 0;
+  if (p) {
+    p += strlen(key);
+    while (*p && *p != '&' && nlen < 32) newName[nlen++] = *p++;
+  }
+
+  char resp[64];
+  int  rlen;
+
+  if (nlen > 0 && isValidApName(newName, nlen))
+  {
+    memcpy(g_apName, newName, nlen);
+    g_apName[nlen] = '\0';
+    bool saved = saveConfig();
+    Serial.printf("[SETUP] AP name set: %s  (saved=%s)\n", g_apName, saved ? "OK" : "FAIL");
+    if (saved)
+      rlen = snprintf(resp, sizeof(resp), "저장됨: %s (다음 진입부터 적용)", g_apName);
+    else
+      rlen = snprintf(resp, sizeof(resp), "[오류] SD 저장 실패 (이름은 적용됨)");
+  }
+  else
+  {
+    rlen = snprintf(resp, sizeof(resp), "[오류] 1-32자, 영문/숫자/-/_ 만 허용");
+  }
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, resp, rlen);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /start  — "운영 시작" 버튼
 // ─────────────────────────────────────────────────────────────────────────────
 static esp_err_t start_handler(httpd_req_t *req)
@@ -458,11 +552,11 @@ static esp_err_t start_handler(httpd_req_t *req)
 static esp_err_t state_handler(httpd_req_t *req)
 {
   int vcmPos = cameraGetVcmPos();
-  char json[80];
+  char json[140];   // g_apName(최대 32자) 포함하도록 여유 있게 확장
   snprintf(json, sizeof(json),
-           "{\"b\":%d,\"m\":%d,\"fp\":%d,\"vp\":%d}",
+           "{\"b\":%d,\"m\":%d,\"fp\":%d,\"vp\":%d,\"ap\":\"%s\"}",
            (int)s_ledBrightness, (int)s_ledMask,
-           g_savedFocusPos, vcmPos);
+           g_savedFocusPos, vcmPos, g_apName);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -686,7 +780,7 @@ static void startSetupHttpd()
   }
 
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 12;   // /, /capture, /set, /start, /state, /led, /led_select, /af, /vcm, /save_focus, /clear_focus
+  cfg.max_uri_handlers = 13;   // /, /capture, /set, /set_ap, /start, /state, /led, /led_select, /af, /vcm, /save_focus, /clear_focus
   cfg.server_port      = 80;
 
   if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
@@ -697,6 +791,7 @@ static void startSetupHttpd()
   REG_URI(s_httpd, "/",             HTTP_GET,  index_handler);
   REG_URI(s_httpd, "/capture",     HTTP_GET,  capture_handler);
   REG_URI(s_httpd, "/set",         HTTP_POST, set_handler);
+  REG_URI(s_httpd, "/set_ap",      HTTP_POST, set_ap_handler);
   REG_URI(s_httpd, "/start",       HTTP_POST, start_handler);
   REG_URI(s_httpd, "/state",       HTTP_GET,  state_handler);
   REG_URI(s_httpd, "/led",         HTTP_POST, led_handler);
@@ -838,13 +933,16 @@ void enterSetupMode()
   g_setupStartMs   = millis();
 
   // WiFi AP 시작
+  // g_apName: config.txt "ap_name=" 로 저장된 값 (없으면 SETUP_AP_SSID 기본값).
+  // 웹/시리얼에서 이름을 바꿔도 이 함수가 다시 호출되기 전까지는 반영되지 않음
+  // (현재 접속 중인 AP 세션을 끊지 않기 위해 "다음 진입부터 적용" 방식으로 설계됨).
   WiFi.disconnect(true);
   delay(100);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(SETUP_AP_SSID);   // 오픈 네트워크 (비밀번호 없음)
+  WiFi.softAP(g_apName);   // 오픈 네트워크 (비밀번호 없음)
 
   IPAddress ip = WiFi.softAPIP();
-  Serial.printf("[SETUP] AP SSID: %s  IP: %s\n", SETUP_AP_SSID, ip.toString().c_str());
+  Serial.printf("[SETUP] AP SSID: %s  IP: %s\n", g_apName, ip.toString().c_str());
 
   startSetupHttpd();
 

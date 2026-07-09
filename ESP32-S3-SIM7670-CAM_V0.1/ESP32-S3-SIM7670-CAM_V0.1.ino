@@ -218,6 +218,8 @@ static void handleGetCmd(const String &field)
     Serial.printf("[GET] Model Prefix     : %s\n",        DEVICE_MODEL_PREFIX);
   else if (field.equalsIgnoreCase("Serial Number"))
     Serial.printf("[GET] Serial Number    : %s\n",        g_deviceUnitCode);
+  else if (field.equalsIgnoreCase("AP Name"))
+    Serial.printf("[GET] AP Name          : %s\n",        g_apName);
   else if (field.equalsIgnoreCase("FW Build Date"))
     Serial.printf("[GET] FW Build Date    : %s %s\n",     __DATE__, __TIME__);
   else if (field.equalsIgnoreCase("Server Host"))
@@ -261,7 +263,8 @@ static void handleGetCmd(const String &field)
   else if (field.isEmpty() || field.equalsIgnoreCase("help"))
   {
     Serial.println("[GET] Available fields:");
-    Serial.println("  Model Prefix        Serial Number       FW Build Date");
+    Serial.println("  Model Prefix        Serial Number       AP Name");
+    Serial.println("  FW Build Date");
     Serial.println("  Server Host         Server Port         NTP Server");
     Serial.println("  Time Zone           WiFi SSID           WiFi PW");
     Serial.println("  m2_point_id         m2_device_id        Battery");
@@ -402,6 +405,22 @@ static void handleSerialCmd(const String &cmd)
       Serial.printf("[SET] sn: value must be 1–%d characters\n", (int)sizeof(g_deviceUnitCode) - 1);
     }
   }
+  else if (cmd.startsWith("set ap "))
+  {
+    String val = cmd.substring(7);
+    val.trim();
+    if (val.length() > 0 && val.length() < sizeof(g_apName) &&
+        isValidApName(val.c_str(), val.length()))
+    {
+      val.toCharArray(g_apName, sizeof(g_apName));
+      Serial.printf("[SET] AP Name = %s (다음 세팅모드 진입부터 적용)\n", g_apName);
+      saveConfig();
+    }
+    else
+    {
+      Serial.printf("[SET] ap: 1–%d자, 영문/숫자/-/_ 만 허용\n", (int)sizeof(g_apName) - 1);
+    }
+  }
   else if (cmd == "bat init")
   {
     Serial.println("[CMD] Re-running batteryInit()...");
@@ -434,6 +453,7 @@ static void handleSerialCmd(const String &cmd)
     Serial.println("  set intv <n>        — capture interval in minutes (1–1440, default 10)");
     Serial.println("  set cnt  <n>        — captures before TX (1–100, default 1)");
     Serial.println("  set sn   <code>     — set serial number unit code (e.g. \"set sn 9032\")");
+    Serial.println("  set ap   <name>     — set AP SSID, applies next setup mode entry (e.g. \"set ap MyDevice\")");
     Serial.println("  sim on              — power on modem (PWRKEY) and re-init");
     Serial.println("  sim off             — power off modem (PWRKEY)");
     Serial.println("  remove sd           — delete ALL files on SD card");
